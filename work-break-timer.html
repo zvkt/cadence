@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#000000">
+<title>work / break timer</title>
+<style>
+  :root { color-scheme: dark; --bg:#000; --fg:#fff; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg); color:var(--fg); }
+  body {
+    font-family: monospace;
+    padding: clamp(20px, 5vw, 64px) 20px 48px;
+    display:flex; justify-content:center;
+  }
+  main { width:min(760px, 100%); }
+  h1 { font-size:clamp(1.1rem, 3vw, 1.5rem); font-weight:400; letter-spacing:.12em; text-transform:uppercase; margin:0 0 48px; }
+  .mode-line { display:flex; justify-content:space-between; align-items:center; gap:16px; text-transform:uppercase; letter-spacing:.14em; font-size:.82rem; }
+  .mode { display:flex; align-items:center; gap:10px; }
+  .dot { width:8px; height:8px; background:#fff; display:inline-block; }
+  .status { color:#888; font-size:.75rem; letter-spacing:.08em; }
+  .display {
+    font-size:clamp(3.4rem, 12vw, 7.2rem); line-height:1;
+    letter-spacing:-.07em; font-variant-numeric:tabular-nums;
+    margin:22px 0 18px; white-space:nowrap;
+  }
+  .subline { min-height:1.4em; color:#888; font-size:.8rem; letter-spacing:.06em; }
+  .controls { display:flex; flex-wrap:wrap; gap:10px; margin-top:30px; }
+  button {
+    appearance:none; border:1px solid #fff; border-radius:0;
+    background:#000; color:#fff; padding:13px 18px;
+    font:inherit; font-size:.8rem; letter-spacing:.08em;
+    text-transform:uppercase; cursor:pointer; min-height:46px;
+    transition:background .08s linear, color .08s linear;
+  }
+  button:hover, button:active, button:focus-visible { background:#fff; color:#000; outline:none; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  button:disabled:hover { background:#000; color:#fff; }
+  .divider { border:0; border-top:1px solid #444; margin:52px 0 30px; }
+  h2 { font-size:.85rem; font-weight:400; letter-spacing:.14em; text-transform:uppercase; margin:0 0 24px; }
+  .setting { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:16px 0; border-top:1px solid #333; }
+  .setting:last-of-type { border-bottom:1px solid #333; }
+  .setting-label { font-size:.82rem; line-height:1.6; }
+  .hint { display:block; color:#888; font-size:.72rem; margin-top:4px; }
+  input[type=number] {
+    width:90px; padding:10px; border:1px solid #fff; border-radius:0;
+    background:#000; color:#fff; font:inherit; text-align:right;
+  }
+  input[type=checkbox] { appearance:none; width:42px; height:24px; border:1px solid #fff; border-radius:0; background:#000; margin:0; cursor:pointer; position:relative; flex:none; }
+  input[type=checkbox]::after { content:""; position:absolute; width:14px; height:14px; top:4px; left:4px; background:#fff; }
+  input[type=checkbox]:checked { background:#fff; }
+  input[type=checkbox]:checked::after { background:#000; left:22px; }
+  input:focus-visible { outline:1px solid #fff; outline-offset:4px; }
+  .setting-control { display:flex; align-items:center; gap:10px; }
+  .unit { color:#888; font-size:.75rem; }
+  .foot { color:#666; font-size:.7rem; line-height:1.7; margin-top:24px; }
+  @media (max-width:480px) {
+    .setting { align-items:flex-start; }
+    .display { letter-spacing:-.08em; }
+    button { flex:1 1 auto; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>work / break</h1>
+
+  <section aria-label="timer">
+    <div class="mode-line">
+      <div class="mode"><span class="dot" aria-hidden="true"></span><span id="modeName">work</span></div>
+      <span class="status" id="status">ready</span>
+    </div>
+    <div class="display" id="display" role="timer" aria-live="off">00:00:00</div>
+    <div class="subline" id="subline">elapsed work time</div>
+    <div class="controls" id="workControls">
+      <button id="workStart">start</button>
+      <button id="workPause" disabled>pause</button>
+      <button id="workReset">reset</button>
+      <button id="breakStart">start break</button>
+    </div>
+    <div class="controls" id="breakControls" hidden>
+      <button id="breakPause">pause break</button>
+      <button id="breakResume" hidden>resume break</button>
+      <button id="backToWork">back to work</button>
+    </div>
+  </section>
+
+  <hr class="divider">
+  <section aria-label="settings">
+    <h2>settings</h2>
+    <div class="setting">
+      <div class="setting-label">work : break ratio<span class="hint">break duration = total work time ÷ ratio</span></div>
+      <div class="setting-control"><input id="ratio" type="number" min="0.01" step="0.01" value="5" aria-label="work to break ratio"><span class="unit">: 1</span></div>
+    </div>
+    <div class="setting">
+      <div class="setting-label">auto-start work after break<span class="hint">begin the work stopwatch when the break ends</span></div>
+      <input id="autoStart" type="checkbox" checked aria-label="auto-start work after break">
+    </div>
+  </section>
+  <p class="foot">timing continues against the system clock while the page is open. sound is generated locally with the web audio api.</p>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const display = $('display');
+  const modeName = $('modeName');
+  const status = $('status');
+  const subline = $('subline');
+  const workControls = $('workControls');
+  const breakControls = $('breakControls');
+
+  let mode = 'work';
+  let workElapsed = 0;
+  let workStartedAt = 0;
+  let workRunning = false;
+  let breakRemaining = 0;
+  let breakDeadline = 0;
+  let breakRunning = false;
+  let audioContext;
+
+  const notes = { C5:523.251, AS5:932.328, DS5:622.254, F5:698.456, G5:783.991 };
+  function playNote(name) {
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      audioContext ||= new AudioContext();
+      if (audioContext.state === 'suspended') audioContext.resume();
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const now = audioContext.currentTime;
+      oscillator.type = 'triangle';
+      oscillator.frequency.setValueAtTime(notes[name], now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.012);
+      gain.gain.setValueAtTime(0.12, now + 0.16);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 0.2);
+    } catch (_) {}
+  }
+  function playSequence(names) {
+    names.forEach((name, index) => setTimeout(() => playNote(name), index * 240));
+  }
+  function format(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return [h,m,s].map(v => String(v).padStart(2,'0')).join(':');
+  }
+  function currentWork() {
+    return workElapsed + (workRunning ? performance.now() - workStartedAt : 0);
+  }
+  function setWorkMode() {
+    mode = 'work';
+    modeName.textContent = 'work';
+    workControls.hidden = false;
+    breakControls.hidden = true;
+    subline.textContent = 'elapsed work time';
+  }
+  function startWork(withSound = true) {
+    if (workRunning) return;
+    setWorkMode();
+    workStartedAt = performance.now();
+    workRunning = true;
+    $('workStart').disabled = true;
+    $('workPause').disabled = false;
+    status.textContent = 'running';
+    if (withSound) playNote('C5');
+    render();
+  }
+  function pauseWork() {
+    if (!workRunning) return;
+    workElapsed = currentWork();
+    workRunning = false;
+    $('workStart').disabled = false;
+    $('workPause').disabled = true;
+    status.textContent = 'paused';
+    playNote('AS5');
+    render();
+  }
+  function resetWork() {
+    workRunning = false;
+    workElapsed = 0;
+    workStartedAt = 0;
+    setWorkMode();
+    $('workStart').disabled = false;
+    $('workPause').disabled = true;
+    status.textContent = 'ready';
+    playNote('DS5');
+    render();
+  }
+  function breakLengthMs() {
+    const ratio = Number($('ratio').value);
+    if (!Number.isFinite(ratio) || ratio <= 0) return 0;
+    return Math.floor(currentWork() / 1000 / ratio) * 1000;
+  }
+  function startBreak() {
+    if (workRunning) pauseWorkSilently();
+    const duration = breakLengthMs();
+    if (duration <= 0) {
+      status.textContent = 'work time too short';
+      return;
+    }
+    mode = 'break';
+    breakRemaining = duration;
+    breakDeadline = performance.now() + breakRemaining;
+    breakRunning = true;
+    modeName.textContent = 'break';
+    status.textContent = 'running';
+    subline.textContent = 'break countdown · calculated from work time';
+    workControls.hidden = true;
+    breakControls.hidden = false;
+    $('breakPause').hidden = false;
+    $('breakResume').hidden = true;
+    playNote('F5');
+    render();
+  }
+  function pauseWorkSilently() {
+    workElapsed = currentWork();
+    workRunning = false;
+    $('workStart').disabled = false;
+    $('workPause').disabled = true;
+  }
+  function pauseBreak() {
+    if (!breakRunning) return;
+    breakRemaining = Math.max(0, breakDeadline - performance.now());
+    breakRunning = false;
+    status.textContent = 'paused';
+    $('breakPause').hidden = true;
+    $('breakResume').hidden = false;
+    render();
+  }
+  function resumeBreak() {
+    if (breakRunning || breakRemaining <= 0) return;
+    breakDeadline = performance.now() + breakRemaining;
+    breakRunning = true;
+    status.textContent = 'running';
+    $('breakPause').hidden = false;
+    $('breakResume').hidden = true;
+    render();
+  }
+  function finishBreak() {
+    breakRemaining = 0;
+    breakRunning = false;
+    playSequence(['G5','DS5']);
+    if ($('autoStart').checked) {
+      workElapsed = 0;
+      startWork(false);
+    } else {
+      setWorkMode();
+      status.textContent = 'break complete';
+      $('workStart').disabled = false;
+      $('workPause').disabled = true;
+      render();
+    }
+  }
+  function backToWork() {
+    breakRunning = false;
+    setWorkMode();
+    status.textContent = 'ready';
+    $('workStart').disabled = false;
+    $('workPause').disabled = true;
+    render();
+  }
+  function render() {
+    if (mode === 'work') {
+      display.textContent = format(currentWork());
+      if (workRunning) status.textContent = 'running';
+    } else {
+      const remaining = breakRunning ? Math.max(0, breakDeadline - performance.now()) : breakRemaining;
+      display.textContent = format(remaining);
+      if (breakRunning && remaining <= 0) finishBreak();
+    }
+  }
+  $('workStart').addEventListener('click', () => startWork(true));
+  $('workPause').addEventListener('click', pauseWork);
+  $('workReset').addEventListener('click', resetWork);
+  $('breakStart').addEventListener('click', startBreak);
+  $('breakPause').addEventListener('click', pauseBreak);
+  $('breakResume').addEventListener('click', resumeBreak);
+  $('backToWork').addEventListener('click', backToWork);
+  $('ratio').addEventListener('change', () => {
+    const input = $('ratio');
+    const value = Number(input.value);
+    if (!Number.isFinite(value) || value <= 0) input.value = '5';
+  });
+  setInterval(render, 100);
+  render();
+})();
+</script>
+</body>
+</html>
