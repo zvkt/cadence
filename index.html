@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#000000">
-<title>work / break timer</title>
+<title>cadence</title>
 <style>
   :root { color-scheme: dark; --bg:#000; --fg:#fff; }
   * { box-sizing:border-box; }
@@ -80,22 +80,44 @@
   .section-note { color:#777; font-size:.7rem; line-height:1.7; margin:-12px 0 20px; }
   @media (max-width:480px) { .log-list li { font-size:.7rem; } }
 
-  .todo-add { display:flex; gap:10px; margin-bottom:18px; }
-  .todo-add input[type=text] { flex:1; min-width:0; padding:12px; border:1px solid #fff; border-radius:0; background:#000; color:#fff; font:inherit; font-size:.82rem; }
-  .todo-add input[type=text]::placeholder { color:#666; }
-  .todo-list { list-style:none; margin:0; padding:0; }
-  .todo-list li { display:flex; align-items:center; gap:12px; padding:9px 0; font-size:.82rem; }
-  .todo-list label { flex:1; display:flex; align-items:center; gap:12px; cursor:pointer; min-width:0; }
-  .todo-text { overflow-wrap:anywhere; line-height:1.5; }
-  .todo-list li.done .todo-text { color:#666; text-decoration:line-through; }
-  input[type=checkbox].todo-check { width:20px; height:20px; }
+  .todo-add { display:flex; gap:10px; margin-bottom:10px; }
+  .todo-field { width:100%; min-width:0; padding:10px 12px; border:1px solid #fff; border-radius:0; background:#000; color:#fff; font:inherit; font-size:.82rem; }
+  .todo-field::placeholder { color:#666; }
+  textarea.todo-field { display:block; resize:vertical; line-height:1.5; }
+  #todoDesc { margin-bottom:22px; }
+  .todo-list, .todo-sublist { list-style:none; margin:0; padding:0; }
+  .todo-sublist { margin-left:22px; }
+  .todo-sublist.flat, .todo-subform.flat { margin-left:0; }   /* stop indenting after 5 levels so deep trees stay on screen */
+  .todo-row { display:flex; align-items:flex-start; gap:8px; padding:8px 0; }
+  .todo-content { flex:1; min-width:0; }
+  .todo-text { font-size:.82rem; line-height:1.5; overflow-wrap:anywhere; }
+  .todo-progress { color:#888; font-size:.7rem; margin-left:8px; white-space:nowrap; }
+  .todo-desc { color:#888; font-size:.72rem; line-height:1.6; margin-top:2px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .todo-row.done .todo-text { color:#666; text-decoration:line-through; }
+  .todo-row.done .todo-desc { color:#555; }
+  .todo-actions { display:flex; flex-wrap:wrap; gap:0 14px; margin-top:2px; }
+  .todo-act { border:0; background:transparent; color:#777; padding:4px 0; min-height:28px; font-size:.68rem; letter-spacing:.06em; text-transform:lowercase; flex:none; }
+  .todo-act:hover, .todo-act:focus-visible { background:transparent; color:#fff; text-decoration:underline; }
+  .todo-grip { flex:none; width:18px; min-height:24px; padding:0; border:0; background:transparent; color:#777; font-size:.9rem; line-height:1; letter-spacing:-3px; cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+  .todo-grip:hover, .todo-grip:focus-visible { background:transparent; color:#fff; }
+  input[type=checkbox].todo-check { width:20px; height:20px; margin-top:2px; }
   input[type=checkbox].todo-check::after { width:10px; height:10px; top:4px; left:4px; background:transparent; }
   input[type=checkbox].todo-check:checked { background:#000; }
   input[type=checkbox].todo-check:checked::after { background:#fff; left:4px; }
-  .todo-add button, .todo-del, .todo-foot button { flex:none; }
-  .todo-del { min-height:32px; padding:4px 10px; font-size:.75rem; }
+  .todo-edit { display:flex; flex-direction:column; gap:8px; }
+  .todo-edit-actions, .todo-subform { display:flex; gap:8px; }
+  .todo-subform { margin:4px 0 8px 22px; }
+  @media (max-width:480px) { .todo-sublist, .todo-subform { margin-left:14px; } }
+  .todo-small { flex:none; min-height:34px; padding:4px 12px; font-size:.7rem; }
+  li.dragging { opacity:.3; }
+  li.drop-before { box-shadow:0 -2px 0 #fff; }
+  li.drop-after { box-shadow:0 2px 0 #fff; }
+  .todo-row.drop-into { outline:1px dashed #fff; outline-offset:-1px; background:#111; }
+  .todo-ghost { position:fixed; z-index:1000; margin:0; padding:8px; background:#000; border:1px solid #fff; pointer-events:none; opacity:.92; }
+  .todo-ghost .todo-actions { display:none; }
+  body.is-dragging, body.is-dragging * { user-select:none; -webkit-user-select:none; cursor:grabbing !important; }
   .todo-foot { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:14px; color:#888; font-size:.72rem; }
-  .todo-foot button { min-height:32px; padding:4px 10px; font-size:.7rem; }
+  .todo-foot button { flex:none; min-height:32px; padding:4px 10px; font-size:.7rem; }
   /* layout: phones = one column (default), tablets = 2 columns, laptops+ = 3 columns */
   .layout { display:grid; gap:56px; grid-template-columns:minmax(0,1fr); align-items:start;
     grid-template-areas:"timer" "todo" "settings" "history"; }
@@ -106,8 +128,9 @@
   .foot { margin-top:56px; }
   @media (min-width:700px) {
     main { width:min(1000px, 100%); }
-    .layout { column-gap:56px; grid-template-columns:repeat(2, minmax(0,1fr)); grid-template-rows:auto auto 1fr;
-      grid-template-areas:"timer history" "todo history" "settings history"; }
+    /* mid-size: left = timer + settings, right = todo + history */
+    .layout { column-gap:56px; grid-template-columns:repeat(2, minmax(0,1fr)); grid-template-rows:auto auto auto;
+      grid-template-areas:"timer todo" "settings todo" "settings history"; }
     .sec-timer { container-type:inline-size; }
     .display { font-size:clamp(2.4rem, 19cqw, 7.2rem); }
   }
@@ -120,8 +143,6 @@
 </head>
 <body>
 <main>
-  <h1>work / break</h1>
-
   <div class="layout">
   <section class="sec-timer" aria-label="timer">
     <div class="mode-line">
@@ -145,11 +166,12 @@
 
   <section class="sec-todo" aria-label="to-do list">
     <h2>to-do · optional</h2>
-    <p class="section-note">leave it empty if you don't need it. saved in this browser.</p>
+    <p class="section-note">leave it empty if you don't need it. drag ⋮⋮ to reorder, or drop onto a task to nest it under it (as many levels as you like). press ctrl+tab on a focused task to nest it under the one above, ctrl+shift+tab to move it out. saved in this browser.</p>
     <div class="todo-add">
-      <input id="todoInput" type="text" maxlength="200" placeholder="add a task" aria-label="new task" autocomplete="off">
-      <button id="todoAdd">add</button>
+      <input id="todoInput" class="todo-field" type="text" maxlength="200" placeholder="add a task" aria-label="new task" autocomplete="off">
+      <button id="todoAdd" style="flex:none">add</button>
     </div>
+    <textarea id="todoDesc" class="todo-field" rows="2" maxlength="1000" placeholder="description (optional)" aria-label="new task description"></textarea>
     <ul class="todo-list" id="todoList"></ul>
     <p class="log-empty" id="todoEmpty">no tasks.</p>
     <div class="todo-foot" id="todoFoot" hidden>
@@ -169,8 +191,12 @@
       <input id="autoStart" type="checkbox" checked aria-label="auto-start work after break">
     </div>
     <div class="setting">
-      <div class="setting-label">start break when a task is checked off<span class="hint">checking a task starts a break from your work time so far. skipped if a break is already running or no work time is logged.</span></div>
-      <input id="todoBreak" type="checkbox" aria-label="start break when a task is checked off">
+      <div class="setting-label">start break when a task is completed<span class="hint">a top-level task counts when you check it, or when its last open subtask is finished. skipped if a break is already running or no work time is logged.</span></div>
+      <input id="taskBreak" type="checkbox" aria-label="start break when a task is completed">
+    </div>
+    <div class="setting">
+      <div class="setting-label">start break when a subtask is completed<span class="hint">any nested item counts when you check it, or when its own last open subtask is finished. items completed only because you checked their parent don't count.</span></div>
+      <input id="subtaskBreak" type="checkbox" aria-label="start break when a subtask is completed">
     </div>
   </section>
 
@@ -427,12 +453,12 @@
     return Math.floor(currentWork() / 1000 / ratio) * 1000;
   }
   function startBreak() {
-    if (workRunning) pauseWorkSilently();
-    const duration = breakLengthMs();
+    const duration = breakLengthMs();   // worked out first, so a refused break never pauses the stopwatch
     if (duration <= 0) {
       status.textContent = 'work time too short';
       return;
     }
+    if (workRunning) pauseWorkSilently();
     mode = 'break';
     breakRemaining = duration;
     breakDeadline = performance.now() + breakRemaining;
@@ -540,7 +566,10 @@
       if (!saved || typeof saved !== 'object') return;
       if (Number.isFinite(saved.ratio) && saved.ratio > 0) $('ratio').value = String(saved.ratio);
       if (typeof saved.autoStart === 'boolean') $('autoStart').checked = saved.autoStart;
-      if (typeof saved.todoBreak === 'boolean') $('todoBreak').checked = saved.todoBreak;
+      // 'todoBreak' was the single toggle in the previous version; it now means "task completed"
+      if (typeof saved.taskBreak === 'boolean') $('taskBreak').checked = saved.taskBreak;
+      else if (typeof saved.todoBreak === 'boolean') $('taskBreak').checked = saved.todoBreak;
+      if (typeof saved.subtaskBreak === 'boolean') $('subtaskBreak').checked = saved.subtaskBreak;
     } catch (_) {}
   }
   function saveSettings() {
@@ -548,94 +577,22 @@
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
         ratio: Number($('ratio').value) > 0 ? Number($('ratio').value) : 5,
         autoStart: $('autoStart').checked,
-        todoBreak: $('todoBreak').checked
+        taskBreak: $('taskBreak').checked,
+        subtaskBreak: $('subtaskBreak').checked
       }));
     } catch (_) {}
   }
   loadSettings();
-  ['ratio', 'autoStart', 'todoBreak'].forEach(id => $(id).addEventListener('change', saveSettings));
+  ['ratio', 'autoStart', 'taskBreak', 'subtaskBreak'].forEach(id => $(id).addEventListener('change', saveSettings));
 
-  // ---------- optional to-do list ----------
+  // ---------- optional to-do list: nested tasks, descriptions, drag and drop ----------
+  // Data: todos = [{ id, text, desc, done, collapsed, subtasks: [ ...same shape, any depth... ] }]
+  // Rule kept everywhere: a completed item never has an unfinished item beneath it.
   const TODO_KEY = 'work-break-focus-todos-v1';
+  const ui = { editId: null, editDraft: null, subFor: null, subDraft: '', confirmDel: null, focusNext: null };
   let todos = loadTodos();
-  function loadTodos() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(TODO_KEY) || '[]');
-      if (!Array.isArray(saved)) return [];
-      return saved.filter(t => t && typeof t.id === 'string' && typeof t.text === 'string')
-                  .map(t => ({ id: t.id, text: t.text.slice(0, 200), done: !!t.done }));
-    } catch (_) { return []; }
-  }
-  function saveTodos() {
-    try { localStorage.setItem(TODO_KEY, JSON.stringify(todos)); } catch (_) {}
-  }
-  function renderTodos() {
-    const list = $('todoList');
-    list.replaceChildren();
-    for (const todo of todos) {
-      const li = document.createElement('li');
-      if (todo.done) li.className = 'done';
-      const label = document.createElement('label');
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.className = 'todo-check';
-      box.checked = todo.done;
-      box.addEventListener('change', () => toggleTodo(todo.id, box.checked));
-      const text = document.createElement('span');
-      text.className = 'todo-text';
-      text.textContent = todo.text;
-      label.append(box, text);
-      const del = document.createElement('button');
-      del.className = 'todo-del';
-      del.textContent = 'x';
-      del.setAttribute('aria-label', 'delete task: ' + todo.text);
-      del.addEventListener('click', () => deleteTodo(todo.id));
-      li.append(label, del);
-      list.append(li);
-    }
-    const doneCount = todos.filter(t => t.done).length;
-    $('todoEmpty').hidden = todos.length !== 0;
-    $('todoFoot').hidden = todos.length === 0;
-    $('todoCount').textContent = doneCount + ' of ' + todos.length + ' done';
-    $('todoClear').hidden = doneCount === 0;
-  }
-  function addTodo() {
-    const input = $('todoInput');
-    const text = input.value.trim();
-    if (!text) return;
-    todos.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), text: text.slice(0, 200), done: false });
-    input.value = '';
-    saveTodos();
-    renderTodos();
-    input.focus();
-  }
-  function toggleTodo(id, done) {
-    const todo = todos.find(t => t.id === id);
-    if (!todo) return;
-    todo.done = done;
-    saveTodos();
-    renderTodos();
-    if (done && $('todoBreak').checked && mode === 'work') startBreak();
-  }
-  function deleteTodo(id) {
-    todos = todos.filter(t => t.id !== id);
-    saveTodos();
-    renderTodos();
-  }
-  $('todoAdd').addEventListener('click', addTodo);
-  $('todoInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTodo(); } });
-  $('todoClear').addEventListener('click', () => {
-    todos = todos.filter(t => !t.done);
-    saveTodos();
-    renderTodos();
-  });
-  window.addEventListener('storage', e => {
-    if (e.key === TODO_KEY) { todos = loadTodos(); renderTodos(); }
-  });
-  renderTodos();
-  renderHistory();
-  render();
-})();
-</script>
-</body>
-</html>
+
+  function mk(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
