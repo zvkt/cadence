@@ -265,10 +265,7 @@
   let breakDeadline = 0;
   let breakRunning = false;
   let audioContext;
-  const STORAGE_KEY = 'work-break-focus-daily-v1';
   const SESSION_STORAGE_KEY = 'work-break-focus-sessions-v1';
-  let dailyTotals = loadDailyTotals();
-  let focusLogCursor = null;
   let activeSessionStart = null;
 
   function localDateKey(date) {
@@ -291,18 +288,7 @@
     }
   }
   let sessionLogs = readSessionLogs();
-  function readStored() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
-      return Object.fromEntries(Object.entries(saved).filter(([key, value]) =>
-        /^\d{4}-\d{2}-\d{2}$/.test(key) && Number.isFinite(value) && value > 0
-      ));
-    } catch (_) { return {}; }
-  }
-  function loadDailyTotals() { return readStored(); }
-  // Splits [from, to) at every local midnight, so a session running
-  // 23:50 -> 00:10 adds 10 min to the first day and 10 min to the next.
+  // Splits a session interval at each local midnight for daily aggregation and display.
   function splitByDay(from, to) {
     const parts = {};
     let cursor = from;
@@ -316,20 +302,6 @@
     }
     return parts;
   }
-  function recordFocusUntil(now = Date.now()) {
-    if (focusLogCursor === null || now <= focusLogCursor) return;
-    const parts = splitByDay(focusLogCursor, now);
-    focusLogCursor = now;
-    // re-read storage first so other open tabs' totals are not overwritten
-    dailyTotals = readStored();
-    for (const [key, ms] of Object.entries(parts)) dailyTotals[key] = (dailyTotals[key] || 0) + ms;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(dailyTotals));
-      storageOk = true;
-    } catch (_) { storageOk = false; }
-    renderHistory();
-  }
-
   function formatDailyDuration(ms) {
     const total = Math.floor(ms / 1000);
     const h = Math.floor(total / 3600);
@@ -385,9 +357,16 @@
   }
   let heatScrolled = false;
   function renderHistory() {
+    sessionLogs = readSessionLogs();
+    const dailyTotals = {};
+    for (const session of sessionLogs) {
+      for (const [key, ms] of Object.entries(splitByDay(session.start, session.end))) {
+        dailyTotals[key] = (dailyTotals[key] || 0) + ms;
+      }
+    }
     const entries = Object.entries(dailyTotals).filter(([, ms]) => ms > 0).sort(([a], [b]) => b.localeCompare(a));
     const total = entries.reduce((sum, [, ms]) => sum + ms, 0);
-    $('historySummary').textContent = `total focus time: ${formatDailyDuration(total)}${storageOk && sessionStorageOk ? '' : ' · not saved (browser storage unavailable)'}`;
+    $('historySummary').textContent = `total focus time: ${formatDailyDuration(total)}${sessionStorageOk ? '' : ' · not saved (browser storage unavailable)'}`;
     const list = $('dailyLog');
     list.replaceChildren();
     for (const [key, ms] of entries) {
@@ -400,7 +379,6 @@
       list.append(li);
     }
     $('emptyLog').hidden = entries.length !== 0;
-    sessionLogs = readSessionLogs();
     const sessionList = $('sessionLog');
     sessionList.replaceChildren();
     const sortedSessions = sessionLogs.slice().sort((a, b) => b.end - a.end);
@@ -508,7 +486,6 @@
     setWorkMode();
     workStartedAt = performance.now();
     activeSessionStart = Date.now();
-    focusLogCursor = activeSessionStart;
     workRunning = true;
     $('workStart').disabled = true;
     $('workPause').disabled = false;
@@ -519,10 +496,8 @@
   function pauseWork() {
     if (!workRunning) return;
     const stoppedAt = Date.now();
-    recordFocusUntil(stoppedAt);
     workElapsed = currentWork();
     workRunning = false;
-    focusLogCursor = null;
     finishFocusSession(stoppedAt);
     $('workStart').disabled = false;
     $('workPause').disabled = true;
@@ -533,10 +508,8 @@
   function resetWork() {
     if (workRunning) {
       const stoppedAt = Date.now();
-      recordFocusUntil(stoppedAt);
       finishFocusSession(stoppedAt, $('logReset').checked);
     }
-    focusLogCursor = null;
     workRunning = false;
     workElapsed = 0;
     workStartedAt = 0;
@@ -575,10 +548,8 @@
   }
   function pauseWorkSilently() {
     const stoppedAt = Date.now();
-    recordFocusUntil(stoppedAt);
     workElapsed = currentWork();
     workRunning = false;
-    focusLogCursor = null;
     finishFocusSession(stoppedAt);
     $('workStart').disabled = false;
     $('workPause').disabled = true;
@@ -646,19 +617,9 @@
     const value = Number(input.value);
     if (!Number.isFinite(value) || value <= 0) input.value = '5';
   });
-  setInterval(() => {
-    if (workRunning) recordFocusUntil();
-    render();
-  }, 1000);
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && workRunning) recordFocusUntil();
-  });
-  const flush = () => { if (workRunning) recordFocusUntil(); };
-  window.addEventListener('beforeunload', flush);
-  window.addEventListener('pagehide', flush);
+  setInterval(render, 1000);
   window.addEventListener('storage', e => {
-    if (e.key === STORAGE_KEY) { dailyTotals = readStored(); renderHistory(); }
-    else if (e.key === SESSION_STORAGE_KEY) { sessionLogs = readSessionLogs(); renderHistory(); }
+    if (e.key === SESSION_STORAGE_KEY) { sessionLogs = readSessionLogs(); renderHistory(); }
   });
 
   // ---------- settings persistence ----------
