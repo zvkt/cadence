@@ -60,6 +60,28 @@
     .display { letter-spacing:-.08em; }
     button { flex:1 1 auto; }
   }
+
+  .stats-summary { color:#888; font-size:.75rem; letter-spacing:.06em; margin:-8px 0 22px; }
+  .heatmap-wrap { overflow-x:auto; padding:4px 0 12px; }
+  .heatmap { display:grid; grid-auto-flow:column; grid-template-rows:repeat(7, 12px); grid-auto-columns:12px; gap:4px; width:max-content; }
+  .heat-day { width:12px; height:12px; background:#252525; border:1px solid #333; }
+  .heat-day.level-1 { background:#16803c; border-color:#16803c; }
+  .heat-day.level-2 { background:#c5c52a; border-color:#c5c52a; }
+  .heat-day.level-3 { background:#e88722; border-color:#e88722; }
+  .heat-day.level-4 { background:#d93636; border-color:#d93636; }
+  .heat-day.level-5 { background:#e13acb; border-color:#e13acb; }
+  .heat-day.level-6 { background:#873fe8; border-color:#873fe8; }
+  .heat-months { display:flex; gap:0; color:#777; font-size:.65rem; margin:0 0 8px 28px; }
+  .heat-months span { width:calc(16px * 4.35); flex:none; }
+  .heat-legend { display:flex; align-items:center; gap:6px; color:#777; font-size:.68rem; margin-top:12px; }
+  .heat-legend .heat-day { display:inline-block; vertical-align:middle; }
+  .log-list { list-style:none; margin:0; padding:0; }
+  .log-list li { display:flex; justify-content:space-between; gap:16px; padding:11px 0; border-top:1px solid #333; font-size:.78rem; font-variant-numeric:tabular-nums; }
+  .log-list li:last-child { border-bottom:1px solid #333; }
+  .log-empty { color:#777; font-size:.78rem; }
+  .section-note { color:#777; font-size:.7rem; line-height:1.7; margin:-12px 0 20px; }
+  @media (max-width:480px) { .log-list li { font-size:.7rem; } }
+
 </style>
 </head>
 <body>
@@ -98,7 +120,34 @@
       <input id="autoStart" type="checkbox" checked aria-label="auto-start work after break">
     </div>
   </section>
-  <p class="foot">timing continues against the system clock while the page is open. sound is generated locally with the web audio api.</p>
+
+  <hr class="divider">
+  <section aria-label="focus history">
+    <h2>focus history</h2>
+    <p class="section-note">daily totals are saved in this browser. days without logged focus time are omitted.</p>
+    <div class="stats-summary" id="historySummary">total focus time: 00°00'00"</div>
+    <h2>activity · last 365 days</h2>
+    <div class="heatmap-wrap">
+      <div class="heat-months" id="heatMonths" aria-hidden="true"></div>
+      <div class="heatmap" id="heatmap" role="img" aria-label="daily focus time heatmap for the last 365 days"></div>
+    </div>
+    <div class="heat-legend">
+      <span>less</span>
+      <span class="heat-day"></span>
+      <span class="heat-day level-1"></span>
+      <span class="heat-day level-2"></span>
+      <span class="heat-day level-3"></span>
+      <span class="heat-day level-4"></span>
+      <span class="heat-day level-5"></span>
+      <span class="heat-day level-6"></span>
+      <span>more</span>
+    </div>
+    <h2 style="margin-top:36px">daily totals</h2>
+    <ul class="log-list" id="dailyLog"></ul>
+    <p class="log-empty" id="emptyLog" hidden>no focus time logged yet.</p>
+  </section>
+
+  <p class="foot">focus totals are saved locally in this browser. clearing browser data will erase them. sound is generated locally with the web audio api.</p>
 </main>
 
 <script>
@@ -119,6 +168,103 @@
   let breakDeadline = 0;
   let breakRunning = false;
   let audioContext;
+  const STORAGE_KEY = 'work-break-focus-daily-v1';
+  let dailyTotals = loadDailyTotals();
+  let focusLogCursor = null;
+
+  function localDateKey(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  function loadDailyTotals() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+      return Object.fromEntries(Object.entries(saved).filter(([key, value]) =>
+        /^\d{4}-\d{2}-\d{2}$/.test(key) && Number.isFinite(value) && value > 0
+      ));
+    } catch (_) { return {}; }
+  }
+  function saveDailyTotals() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dailyTotals)); }
+    catch (_) { status.textContent = 'storage unavailable'; }
+  }
+  function recordFocusUntil(now = Date.now()) {
+    if (focusLogCursor === null || now <= focusLogCursor) return;
+    let cursor = focusLogCursor;
+    while (cursor < now) {
+      const date = new Date(cursor);
+      const midnight = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime();
+      const end = Math.min(now, midnight);
+      const key = localDateKey(date);
+      dailyTotals[key] = (dailyTotals[key] || 0) + (end - cursor);
+      cursor = end;
+    }
+    focusLogCursor = now;
+    saveDailyTotals();
+    renderHistory();
+  }
+  function formatDailyDuration(ms) {
+    const total = Math.floor(ms / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `${String(h).padStart(2,'0')}°${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}\\"`;
+  }
+  function displayDate(key) {
+    const [y, m, d] = key.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  function renderHistory() {
+    const entries = Object.entries(dailyTotals).filter(([, ms]) => ms > 0).sort(([a], [b]) => b.localeCompare(a));
+    const total = entries.reduce((sum, [, ms]) => sum + ms, 0);
+    $('historySummary').textContent = `total focus time: ${formatDailyDuration(total)}`;
+    const list = $('dailyLog');
+    list.replaceChildren();
+    for (const [key, ms] of entries) {
+      const li = document.createElement('li');
+      const date = document.createElement('span');
+      const duration = document.createElement('span');
+      date.textContent = displayDate(key);
+      duration.textContent = formatDailyDuration(ms);
+      li.append(date, duration);
+      list.append(li);
+    }
+    $('emptyLog').hidden = entries.length !== 0;
+
+    const heatmap = $('heatmap');
+    const months = $('heatMonths');
+    heatmap.replaceChildren();
+    months.replaceChildren();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const start = new Date(today);
+    start.setDate(start.getDate() - 364);
+    start.setDate(start.getDate() - start.getDay());
+    const days = [];
+    for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
+      days.push(new Date(d));
+    }
+    let lastMonth = -1;
+    for (const day of days) {
+      if (day.getMonth() !== lastMonth) {
+        const label = document.createElement('span');
+        label.textContent = day.toLocaleString(undefined, { month: 'short' });
+        months.append(label);
+        lastMonth = day.getMonth();
+      }
+      const key = localDateKey(day);
+      const ms = dailyTotals[key] || 0;
+      const hours = ms / 3600000;
+      const level = ms <= 0 ? 0 : hours < 1 ? 1 : hours < 3 ? 2 : hours < 5 ? 3 : hours < 7 ? 4 : hours < 9 ? 5 : 6;
+      const cell = document.createElement('div');
+      cell.className = `heat-day${level ? ` level-${level}` : ''}`;
+      cell.title = `${displayDate(key)} · ${formatDailyDuration(ms)}`;
+      heatmap.append(cell);
+    }
+  }
 
   const notes = { C5:523.251, AS5:932.328, DS5:622.254, F5:698.456, G5:783.991 };
   function playNote(name) {
@@ -166,6 +312,7 @@
     if (workRunning) return;
     setWorkMode();
     workStartedAt = performance.now();
+    focusLogCursor = Date.now();
     workRunning = true;
     $('workStart').disabled = true;
     $('workPause').disabled = false;
@@ -175,8 +322,10 @@
   }
   function pauseWork() {
     if (!workRunning) return;
+    recordFocusUntil();
     workElapsed = currentWork();
     workRunning = false;
+    focusLogCursor = null;
     $('workStart').disabled = false;
     $('workPause').disabled = true;
     status.textContent = 'paused';
@@ -184,6 +333,8 @@
     render();
   }
   function resetWork() {
+    if (workRunning) recordFocusUntil();
+    focusLogCursor = null;
     workRunning = false;
     workElapsed = 0;
     workStartedAt = 0;
@@ -221,8 +372,10 @@
     render();
   }
   function pauseWorkSilently() {
+    recordFocusUntil();
     workElapsed = currentWork();
     workRunning = false;
+    focusLogCursor = null;
     $('workStart').disabled = false;
     $('workPause').disabled = true;
   }
@@ -289,7 +442,17 @@
     const value = Number(input.value);
     if (!Number.isFinite(value) || value <= 0) input.value = '5';
   });
-  setInterval(render, 100);
+  setInterval(() => {
+    if (workRunning) recordFocusUntil();
+    render();
+  }, 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && workRunning) recordFocusUntil();
+  });
+  window.addEventListener('beforeunload', () => {
+    if (workRunning) recordFocusUntil();
+  });
+  renderHistory();
   render();
 })();
 </script>
