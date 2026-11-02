@@ -178,7 +178,8 @@
     const d = String(date.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
-  function loadDailyTotals() {
+  let storageOk = true;
+  function readStored() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
@@ -187,25 +188,36 @@
       ));
     } catch (_) { return {}; }
   }
-  function saveDailyTotals() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dailyTotals)); }
-    catch (_) { status.textContent = 'storage unavailable'; }
+  function loadDailyTotals() { return readStored(); }
+  // Splits [from, to) at every local midnight, so a session running
+  // 23:50 -> 00:10 adds 10 min to the first day and 10 min to the next.
+  function splitByDay(from, to) {
+    const parts = {};
+    let cursor = from;
+    while (cursor < to) {
+      const date = new Date(cursor);
+      const midnight = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime();
+      const end = Math.min(to, midnight);
+      const key = localDateKey(date);
+      parts[key] = (parts[key] || 0) + (end - cursor);
+      cursor = end;
+    }
+    return parts;
   }
   function recordFocusUntil(now = Date.now()) {
     if (focusLogCursor === null || now <= focusLogCursor) return;
-    let cursor = focusLogCursor;
-    while (cursor < now) {
-      const date = new Date(cursor);
-      const midnight = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime();
-      const end = Math.min(now, midnight);
-      const key = localDateKey(date);
-      dailyTotals[key] = (dailyTotals[key] || 0) + (end - cursor);
-      cursor = end;
-    }
+    const parts = splitByDay(focusLogCursor, now);
     focusLogCursor = now;
-    saveDailyTotals();
+    // re-read storage first so other open tabs' totals are not overwritten
+    dailyTotals = readStored();
+    for (const [key, ms] of Object.entries(parts)) dailyTotals[key] = (dailyTotals[key] || 0) + ms;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(dailyTotals));
+      storageOk = true;
+    } catch (_) { storageOk = false; }
     renderHistory();
   }
+
   function formatDailyDuration(ms) {
     const total = Math.floor(ms / 1000);
     const h = Math.floor(total / 3600);
@@ -220,7 +232,7 @@
   function renderHistory() {
     const entries = Object.entries(dailyTotals).filter(([, ms]) => ms > 0).sort(([a], [b]) => b.localeCompare(a));
     const total = entries.reduce((sum, [, ms]) => sum + ms, 0);
-    $('historySummary').textContent = `total focus time: ${formatDailyDuration(total)}`;
+    $('historySummary').textContent = `total focus time: ${formatDailyDuration(total)}${storageOk ? '' : ' · not saved (browser storage unavailable)'}`;
     const list = $('dailyLog');
     list.replaceChildren();
     for (const [key, ms] of entries) {
@@ -449,8 +461,11 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && workRunning) recordFocusUntil();
   });
-  window.addEventListener('beforeunload', () => {
-    if (workRunning) recordFocusUntil();
+  const flush = () => { if (workRunning) recordFocusUntil(); };
+  window.addEventListener('beforeunload', flush);
+  window.addEventListener('pagehide', flush);
+  window.addEventListener('storage', e => {
+    if (e.key === STORAGE_KEY) { dailyTotals = readStored(); renderHistory(); }
   });
   renderHistory();
   render();
