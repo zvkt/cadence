@@ -88,6 +88,19 @@
   .todo-field { width:100%; min-width:0; padding:10px 12px; border:1px solid #fff; border-radius:0; background:#000; color:#fff; font:inherit; font-size:.82rem; }
   .todo-field::placeholder { color:#666; }
   textarea.todo-field { display:block; resize:vertical; line-height:1.5; }
+  .todo-list-tabs { display:flex; gap:8px; overflow-x:auto; margin:0 0 16px; padding:0 0 4px; }
+  .todo-list-tab { display:flex; align-items:center; gap:10px; flex:none; min-height:38px; padding:8px 10px; border-color:#555; font-size:.72rem; white-space:nowrap; }
+  .todo-list-tab:hover, .todo-list-tab:focus-visible { background:#111; color:#fff; }
+  .todo-list-tab[aria-pressed=true] { border-color:#fff; }
+  .todo-list-tab-name { color:#fff; }
+  .todo-list-tab-count { color:#888; font-size:.68rem; text-transform:none; letter-spacing:0; }
+  .todo-list-controls { display:flex; gap:8px; margin-bottom:16px; }
+  .todo-list-controls button { flex:none; }
+  .todo-list-rename { display:flex; gap:8px; margin-bottom:16px; }
+  .todo-list-rename .todo-field { flex:1; }
+  .todo-list-error, .todo-storage-status { color:#aaa; font-size:.7rem; line-height:1.5; margin:0 0 14px; }
+  .todo-list-error { color:#fff; }
+  .todo-storage-status { color:#888; }
   #todoDesc { margin-bottom:22px; }
   .todo-list, .todo-sublist { list-style:none; margin:0; padding:0; }
   .todo-sublist { margin-left:22px; }
@@ -169,7 +182,19 @@
 
   <section class="sec-todo" aria-label="to-do list">
     <h2>to-do · optional</h2>
-    <p class="section-note">leave it empty if you don't need it. drag ⋮⋮ to reorder, swipe right or press Ctrl+Tab to nest under the task above, and swipe left or press Ctrl+Shift+Tab to move out. saved in this browser.</p>
+    <p class="section-note">organize tasks into lists. drag ⋮⋮ to reorder, swipe right or press Ctrl+Tab to nest under the task above, and swipe left or press Ctrl+Shift+Tab to move out. saved in this browser.</p>
+    <nav class="todo-list-tabs" id="todoListTabs" aria-label="Task lists"></nav>
+    <div class="todo-list-controls" id="todoListControls">
+      <button class="todo-small" id="todoAddList" type="button">+ list</button>
+      <button class="todo-small" id="todoRenameList" type="button">rename list</button>
+    </div>
+    <form class="todo-list-rename" id="todoListRenameForm" hidden>
+      <input class="todo-field" id="todoListNameInput" type="text" maxlength="60" aria-label="task list name" autocomplete="off">
+      <button class="todo-small" type="submit">save</button>
+      <button class="todo-small" id="todoCancelRename" type="button">cancel</button>
+    </form>
+    <p class="todo-list-error" id="todoListNameError" hidden>enter a list name.</p>
+    <p class="todo-storage-status" id="todoStorageStatus" role="status" hidden></p>
     <div class="todo-add">
       <input id="todoInput" class="todo-field" type="text" maxlength="200" placeholder="add a task" aria-label="new task" autocomplete="off">
       <button id="todoAdd" style="flex:none">add</button>
@@ -653,11 +678,15 @@
     $(id).addEventListener('change', () => { saveSettings(); renderHistory(); }));
 
   // ---------- optional to-do list: nested tasks, descriptions, drag and drop ----------
-  // Data: todos = [{ id, text, desc, done, collapsed, subtasks: [ ...same shape, any depth... ] }]
+  // Data: taskLists = [{ id, name, todos: [ ...nested task items... ] }]
   // Rule kept everywhere: a completed item never has an unfinished item beneath it.
   const TODO_KEY = 'work-break-focus-todos-v1';
-  const ui = { editId: null, editDraft: null, subFor: null, subDraft: '', confirmDel: null, focusNext: null };
-  let todos = loadTodos();
+  const ui = { editId: null, editDraft: null, subFor: null, subDraft: '', confirmDel: null, focusNext: null, renameList: false };
+  let todoStorageOk = true;
+  let taskData = loadTaskData();
+  let taskLists = taskData.lists;
+  let activeListId = taskData.activeListId;
+  let todos = taskLists.find(list => list.id === activeListId).todos;
 
   function mk(tag, cls, text) {
     const node = document.createElement(tag);
@@ -678,17 +707,141 @@
       subtasks: Array.isArray(t.subtasks) ? t.subtasks.filter(validItem).map(cleanItem) : []
     };
   }
-  function loadTodos() {
+  function defaultTaskList() { return { id: newId(), name: 'my tasks', todos: [] }; }
+  function cleanTaskList(list) {
+    if (!list || typeof list.id !== 'string') return null;
+    const todos = Array.isArray(list.todos) ? list.todos.filter(validItem).map(cleanItem) : [];
+    normalize(todos);
+    return {
+      id: list.id,
+      name: typeof list.name === 'string' && list.name.trim() ? list.name.trim().slice(0, 60) : 'untitled list',
+      todos
+    };
+  }
+  function loadTaskData() {
     try {
-      const saved = JSON.parse(localStorage.getItem(TODO_KEY) || '[]');
-      if (!Array.isArray(saved)) return [];
-      const result = saved.filter(validItem).map(cleanItem);
-      normalize(result);
-      return result;
-    } catch (_) { return []; }
+      const stored = localStorage.getItem(TODO_KEY);
+      if (stored === null) {
+        const list = defaultTaskList();
+        return { lists: [list], activeListId: list.id };
+      }
+      const saved = JSON.parse(stored);
+      if (Array.isArray(saved)) {
+        const list = defaultTaskList();
+        list.todos = saved.filter(validItem).map(cleanItem);
+        normalize(list.todos);
+        return { lists: [list], activeListId: list.id, migrated: true };
+      }
+      const lists = saved && Array.isArray(saved.lists) ? saved.lists.map(cleanTaskList).filter(Boolean) : [];
+      if (!lists.length) {
+        const list = defaultTaskList();
+        return { lists: [list], activeListId: list.id };
+      }
+      const activeListId = lists.some(list => list.id === saved.activeListId) ? saved.activeListId : lists[0].id;
+      return { lists, activeListId };
+    } catch (_) {
+      todoStorageOk = false;
+      const list = defaultTaskList();
+      return { lists: [list], activeListId: list.id };
+    }
   }
   function saveTodos() {
-    try { localStorage.setItem(TODO_KEY, JSON.stringify(todos)); } catch (_) {}
+    try {
+      localStorage.setItem(TODO_KEY, JSON.stringify({ lists: taskLists, activeListId }));
+      todoStorageOk = true;
+    } catch (_) { todoStorageOk = false; }
+  }
+  if (taskData.migrated) saveTodos();
+  function countTasks(items) {
+    return items.reduce((count, item) => count + 1 + countTasks(item.subtasks), 0);
+  }
+  function renderTaskLists() {
+    const tabs = $('todoListTabs');
+    tabs.replaceChildren();
+    for (const taskList of taskLists) {
+      const tab = mk('button', 'todo-list-tab');
+      tab.type = 'button';
+      tab.setAttribute('aria-pressed', String(taskList.id === activeListId));
+      tab.setAttribute('aria-label', `${taskList.name}, ${countTasks(taskList.todos)} tasks`);
+      const name = mk('span', 'todo-list-tab-name', taskList.name);
+      const count = countTasks(taskList.todos);
+      const amount = mk('span', 'todo-list-tab-count', `${count} ${count === 1 ? 'task' : 'tasks'}`);
+      tab.append(name, amount);
+      tab.addEventListener('click', () => selectTaskList(taskList.id));
+      tabs.append(tab);
+    }
+    $('todoListControls').hidden = ui.renameList;
+    $('todoListRenameForm').hidden = !ui.renameList;
+    $('todoStorageStatus').hidden = todoStorageOk;
+    $('todoStorageStatus').textContent = 'task lists could not be saved or loaded because of a browser storage error.';
+  }
+  function resetTodoEditor() {
+    ui.editId = null;
+    ui.editDraft = null;
+    ui.subFor = null;
+    ui.subDraft = '';
+    ui.confirmDel = null;
+    ui.focusNext = null;
+  }
+  function selectTaskList(id) {
+    const selected = taskLists.find(taskList => taskList.id === id);
+    if (!selected || id === activeListId) return;
+    activeListId = id;
+    todos = selected.todos;
+    resetTodoEditor();
+    ui.renameList = false;
+    $('todoInput').value = '';
+    $('todoDesc').value = '';
+    $('todoListNameError').hidden = true;
+    saveTodos();
+    renderTodos();
+  }
+  function addTaskList() {
+    const names = new Set(taskLists.map(list => list.name.toLowerCase()));
+    let name = 'new list';
+    let suffix = 2;
+    while (names.has(name)) name = `new list ${suffix++}`;
+    const list = { id: newId(), name, todos: [] };
+    taskLists.push(list);
+    activeListId = list.id;
+    todos = list.todos;
+    resetTodoEditor();
+    $('todoInput').value = '';
+    $('todoDesc').value = '';
+    saveTodos();
+    renderTodos();
+  }
+  function startRenameTaskList() {
+    const list = taskLists.find(taskList => taskList.id === activeListId);
+    if (!list) return;
+    ui.renameList = true;
+    $('todoListNameInput').value = list.name;
+    $('todoListNameError').hidden = true;
+    renderTaskLists();
+    $('todoListNameInput').focus();
+    $('todoListNameInput').select();
+  }
+  function cancelRenameTaskList() {
+    ui.renameList = false;
+    $('todoListNameError').hidden = true;
+    renderTaskLists();
+  }
+  function saveTaskListName(event) {
+    event.preventDefault();
+    const input = $('todoListNameInput');
+    const name = input.value.trim();
+    if (!name) {
+      $('todoListNameError').hidden = false;
+      input.focus();
+      return;
+    }
+    const list = taskLists.find(taskList => taskList.id === activeListId);
+    if (!list) return;
+    list.name = name.slice(0, 60);
+    ui.renameList = false;
+    $('todoListNameError').hidden = true;
+    saveTodos();
+    renderTodos();
   }
   // an item can't stay completed while something beneath it is unfinished (deepest levels first)
   function normalize(list = todos) {
@@ -720,6 +873,7 @@
     const openSub = list.querySelector('.todo-subform input');
     if (openSub) ui.subDraft = openSub.value;
 
+    renderTaskLists();
     list.replaceChildren();
     for (const task of todos) list.append(buildItem(task, null, 0));
 
@@ -1119,14 +1273,23 @@
   });
 
   $('todoAdd').addEventListener('click', addTodo);
+  $('todoAddList').addEventListener('click', addTaskList);
+  $('todoRenameList').addEventListener('click', startRenameTaskList);
+  $('todoListRenameForm').addEventListener('submit', saveTaskListName);
+  $('todoCancelRename').addEventListener('click', cancelRenameTaskList);
+  $('todoListNameInput').addEventListener('keydown', e => { if (e.key === 'Escape') cancelRenameTaskList(); });
   $('todoInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTodo(); } });
   $('todoDesc').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addTodo(); } });
   $('todoClear').addEventListener('click', clearCompleted);
   window.addEventListener('storage', e => {
     if (e.key !== TODO_KEY || drag) return;
-    todos = loadTodos();
-    if (ui.editId && !findItem(ui.editId)) { ui.editId = null; ui.editDraft = null; }
-    if (ui.subFor && !findItem(ui.subFor)) { ui.subFor = null; ui.subDraft = ''; }
+    taskData = loadTaskData();
+    taskLists = taskData.lists;
+    activeListId = taskData.activeListId;
+    todos = taskLists.find(list => list.id === activeListId).todos;
+    if (taskData.migrated) saveTodos();
+    resetTodoEditor();
+    ui.renameList = false;
     renderTodos();
   });
   renderTodos();
