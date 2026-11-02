@@ -8,6 +8,7 @@
 <style>
   :root { color-scheme: dark; --bg:#000; --fg:#fff; }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   html, body { margin:0; min-height:100%; background:var(--bg); color:var(--fg); }
   body {
     font-family: monospace;
@@ -37,10 +38,8 @@
   button:hover, button:active, button:focus-visible { background:#fff; color:#000; outline:none; }
   button:disabled { opacity:.35; cursor:not-allowed; }
   button:disabled:hover { background:#000; color:#fff; }
-  .divider { border:0; border-top:1px solid #444; margin:52px 0 30px; }
   h2 { font-size:.85rem; font-weight:400; letter-spacing:.14em; text-transform:uppercase; margin:0 0 24px; }
-  .setting { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:16px 0; border-top:1px solid #333; }
-  .setting:last-of-type { border-bottom:1px solid #333; }
+  .setting { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:14px 0; }
   .setting-label { font-size:.82rem; line-height:1.6; }
   .hint { display:block; color:#888; font-size:.72rem; margin-top:4px; }
   input[type=number] {
@@ -52,8 +51,8 @@
   input[type=checkbox]:checked { background:#fff; }
   input[type=checkbox]:checked::after { background:#000; left:22px; }
   input:focus-visible { outline:1px solid #fff; outline-offset:4px; }
-  .setting-control { display:flex; align-items:center; gap:10px; }
-  .unit { color:#888; font-size:.75rem; }
+  .setting-control { display:flex; align-items:center; gap:10px; flex:none; }
+  .unit { color:#888; font-size:.75rem; white-space:nowrap; }
   .foot { color:#666; font-size:.7rem; line-height:1.7; margin-top:24px; }
   @media (max-width:480px) {
     .setting { align-items:flex-start; }
@@ -71,24 +70,60 @@
   .heat-day.level-4 { background:#d93636; border-color:#d93636; }
   .heat-day.level-5 { background:#e13acb; border-color:#e13acb; }
   .heat-day.level-6 { background:#873fe8; border-color:#873fe8; }
-  .heat-months { display:flex; gap:0; color:#777; font-size:.65rem; margin:0 0 8px 28px; }
-  .heat-months span { width:calc(16px * 4.35); flex:none; }
+  .heat-months { position:relative; height:14px; color:#777; font-size:.65rem; margin:0 0 6px; }
+  .heat-months span { position:absolute; top:0; white-space:nowrap; }
   .heat-legend { display:flex; align-items:center; gap:6px; color:#777; font-size:.68rem; margin-top:12px; }
   .heat-legend .heat-day { display:inline-block; vertical-align:middle; }
   .log-list { list-style:none; margin:0; padding:0; }
-  .log-list li { display:flex; justify-content:space-between; gap:16px; padding:11px 0; border-top:1px solid #333; font-size:.78rem; font-variant-numeric:tabular-nums; }
-  .log-list li:last-child { border-bottom:1px solid #333; }
+  .log-list li { display:flex; justify-content:space-between; gap:16px; padding:8px 0; font-size:.78rem; font-variant-numeric:tabular-nums; }
   .log-empty { color:#777; font-size:.78rem; }
   .section-note { color:#777; font-size:.7rem; line-height:1.7; margin:-12px 0 20px; }
   @media (max-width:480px) { .log-list li { font-size:.7rem; } }
 
+  .todo-add { display:flex; gap:10px; margin-bottom:18px; }
+  .todo-add input[type=text] { flex:1; min-width:0; padding:12px; border:1px solid #fff; border-radius:0; background:#000; color:#fff; font:inherit; font-size:.82rem; }
+  .todo-add input[type=text]::placeholder { color:#666; }
+  .todo-list { list-style:none; margin:0; padding:0; }
+  .todo-list li { display:flex; align-items:center; gap:12px; padding:9px 0; font-size:.82rem; }
+  .todo-list label { flex:1; display:flex; align-items:center; gap:12px; cursor:pointer; min-width:0; }
+  .todo-text { overflow-wrap:anywhere; line-height:1.5; }
+  .todo-list li.done .todo-text { color:#666; text-decoration:line-through; }
+  input[type=checkbox].todo-check { width:20px; height:20px; }
+  input[type=checkbox].todo-check::after { width:10px; height:10px; top:4px; left:4px; background:transparent; }
+  input[type=checkbox].todo-check:checked { background:#000; }
+  input[type=checkbox].todo-check:checked::after { background:#fff; left:4px; }
+  .todo-add button, .todo-del, .todo-foot button { flex:none; }
+  .todo-del { min-height:32px; padding:4px 10px; font-size:.75rem; }
+  .todo-foot { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:14px; color:#888; font-size:.72rem; }
+  .todo-foot button { min-height:32px; padding:4px 10px; font-size:.7rem; }
+  /* layout: phones = one column (default), tablets = 2 columns, laptops+ = 3 columns */
+  .layout { display:grid; gap:56px; grid-template-columns:minmax(0,1fr); align-items:start;
+    grid-template-areas:"timer" "todo" "settings" "history"; }
+  .sec-timer { grid-area:timer; }
+  .sec-todo { grid-area:todo; }
+  .sec-settings { grid-area:settings; }
+  .sec-history { grid-area:history; }
+  .foot { margin-top:56px; }
+  @media (min-width:700px) {
+    main { width:min(1000px, 100%); }
+    .layout { column-gap:56px; grid-template-columns:repeat(2, minmax(0,1fr)); grid-template-rows:auto auto 1fr;
+      grid-template-areas:"timer history" "todo history" "settings history"; }
+    .sec-timer { container-type:inline-size; }
+    .display { font-size:clamp(2.4rem, 19cqw, 7.2rem); }
+  }
+  @media (min-width:1100px) {
+    main { width:min(1500px, 100%); }
+    .layout { column-gap:64px; grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.35fr); grid-template-rows:auto 1fr;
+      grid-template-areas:"timer todo history" "settings todo history"; }
+  }
 </style>
 </head>
 <body>
 <main>
   <h1>work / break</h1>
 
-  <section aria-label="timer">
+  <div class="layout">
+  <section class="sec-timer" aria-label="timer">
     <div class="mode-line">
       <div class="mode"><span class="dot" aria-hidden="true"></span><span id="modeName">work</span></div>
       <span class="status" id="status">ready</span>
@@ -108,8 +143,22 @@
     </div>
   </section>
 
-  <hr class="divider">
-  <section aria-label="settings">
+  <section class="sec-todo" aria-label="to-do list">
+    <h2>to-do · optional</h2>
+    <p class="section-note">leave it empty if you don't need it. saved in this browser.</p>
+    <div class="todo-add">
+      <input id="todoInput" type="text" maxlength="200" placeholder="add a task" aria-label="new task" autocomplete="off">
+      <button id="todoAdd">add</button>
+    </div>
+    <ul class="todo-list" id="todoList"></ul>
+    <p class="log-empty" id="todoEmpty">no tasks.</p>
+    <div class="todo-foot" id="todoFoot" hidden>
+      <span id="todoCount"></span>
+      <button id="todoClear">clear completed</button>
+    </div>
+  </section>
+
+  <section class="sec-settings" aria-label="settings">
     <h2>settings</h2>
     <div class="setting">
       <div class="setting-label">work : break ratio<span class="hint">break duration = total work time ÷ ratio</span></div>
@@ -119,10 +168,13 @@
       <div class="setting-label">auto-start work after break<span class="hint">begin the work stopwatch when the break ends</span></div>
       <input id="autoStart" type="checkbox" checked aria-label="auto-start work after break">
     </div>
+    <div class="setting">
+      <div class="setting-label">start break when a task is checked off<span class="hint">checking a task starts a break from your work time so far. skipped if a break is already running or no work time is logged.</span></div>
+      <input id="todoBreak" type="checkbox" aria-label="start break when a task is checked off">
+    </div>
   </section>
 
-  <hr class="divider">
-  <section aria-label="focus history">
+  <section class="sec-history" aria-label="focus history">
     <h2>focus history</h2>
     <p class="section-note">daily totals are saved in this browser. days without logged focus time are omitted.</p>
     <div class="stats-summary" id="historySummary">total focus time: 00°00'00"</div>
@@ -146,6 +198,8 @@
     <ul class="log-list" id="dailyLog"></ul>
     <p class="log-empty" id="emptyLog" hidden>no focus time logged yet.</p>
   </section>
+
+  </div>
 
   <p class="foot">focus totals are saved locally in this browser. clearing browser data will erase them. sound is generated locally with the web audio api.</p>
 </main>
@@ -229,6 +283,7 @@
     const [y, m, d] = key.split('-');
     return `${d}/${m}/${y}`;
   }
+  let heatScrolled = false;
   function renderHistory() {
     const entries = Object.entries(dailyTotals).filter(([, ms]) => ms > 0).sort(([a], [b]) => b.localeCompare(a));
     const total = entries.reduce((sum, [, ms]) => sum + ms, 0);
@@ -260,11 +315,18 @@
       days.push(new Date(d));
     }
     let lastMonth = -1;
-    for (const day of days) {
+    let lastLabelCol = -10;
+    months.style.width = (Math.ceil(days.length / 7) * 16) + 'px';
+    for (const [index, day] of days.entries()) {
       if (day.getMonth() !== lastMonth) {
-        const label = document.createElement('span');
-        label.textContent = day.toLocaleString(undefined, { month: 'short' });
-        months.append(label);
+        const col = Math.floor(index / 7);
+        if (col - lastLabelCol >= 3) {
+          const label = document.createElement('span');
+          label.textContent = day.toLocaleString(undefined, { month: 'short' });
+          label.style.left = (col * 16) + 'px';
+          months.append(label);
+          lastLabelCol = col;
+        }
         lastMonth = day.getMonth();
       }
       const key = localDateKey(day);
@@ -276,6 +338,8 @@
       cell.title = `${displayDate(key)} · ${formatDailyDuration(ms)}`;
       heatmap.append(cell);
     }
+    const wrap = heatmap.parentElement;
+    if (wrap && !heatScrolled) { wrap.scrollLeft = wrap.scrollWidth; heatScrolled = true; }
   }
 
   const notes = { C5:523.251, AS5:932.328, DS5:622.254, F5:698.456, G5:783.991 };
@@ -467,6 +531,108 @@
   window.addEventListener('storage', e => {
     if (e.key === STORAGE_KEY) { dailyTotals = readStored(); renderHistory(); }
   });
+
+  // ---------- settings persistence ----------
+  const SETTINGS_KEY = 'work-break-focus-settings-v1';
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+      if (!saved || typeof saved !== 'object') return;
+      if (Number.isFinite(saved.ratio) && saved.ratio > 0) $('ratio').value = String(saved.ratio);
+      if (typeof saved.autoStart === 'boolean') $('autoStart').checked = saved.autoStart;
+      if (typeof saved.todoBreak === 'boolean') $('todoBreak').checked = saved.todoBreak;
+    } catch (_) {}
+  }
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        ratio: Number($('ratio').value) > 0 ? Number($('ratio').value) : 5,
+        autoStart: $('autoStart').checked,
+        todoBreak: $('todoBreak').checked
+      }));
+    } catch (_) {}
+  }
+  loadSettings();
+  ['ratio', 'autoStart', 'todoBreak'].forEach(id => $(id).addEventListener('change', saveSettings));
+
+  // ---------- optional to-do list ----------
+  const TODO_KEY = 'work-break-focus-todos-v1';
+  let todos = loadTodos();
+  function loadTodos() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TODO_KEY) || '[]');
+      if (!Array.isArray(saved)) return [];
+      return saved.filter(t => t && typeof t.id === 'string' && typeof t.text === 'string')
+                  .map(t => ({ id: t.id, text: t.text.slice(0, 200), done: !!t.done }));
+    } catch (_) { return []; }
+  }
+  function saveTodos() {
+    try { localStorage.setItem(TODO_KEY, JSON.stringify(todos)); } catch (_) {}
+  }
+  function renderTodos() {
+    const list = $('todoList');
+    list.replaceChildren();
+    for (const todo of todos) {
+      const li = document.createElement('li');
+      if (todo.done) li.className = 'done';
+      const label = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'todo-check';
+      box.checked = todo.done;
+      box.addEventListener('change', () => toggleTodo(todo.id, box.checked));
+      const text = document.createElement('span');
+      text.className = 'todo-text';
+      text.textContent = todo.text;
+      label.append(box, text);
+      const del = document.createElement('button');
+      del.className = 'todo-del';
+      del.textContent = 'x';
+      del.setAttribute('aria-label', 'delete task: ' + todo.text);
+      del.addEventListener('click', () => deleteTodo(todo.id));
+      li.append(label, del);
+      list.append(li);
+    }
+    const doneCount = todos.filter(t => t.done).length;
+    $('todoEmpty').hidden = todos.length !== 0;
+    $('todoFoot').hidden = todos.length === 0;
+    $('todoCount').textContent = doneCount + ' of ' + todos.length + ' done';
+    $('todoClear').hidden = doneCount === 0;
+  }
+  function addTodo() {
+    const input = $('todoInput');
+    const text = input.value.trim();
+    if (!text) return;
+    todos.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), text: text.slice(0, 200), done: false });
+    input.value = '';
+    saveTodos();
+    renderTodos();
+    input.focus();
+  }
+  function toggleTodo(id, done) {
+    const todo = todos.find(t => t.id === id);
+    if (!todo) return;
+    todo.done = done;
+    saveTodos();
+    renderTodos();
+    if (done && $('todoBreak').checked && mode === 'work') startBreak();
+  }
+  function deleteTodo(id) {
+    todos = todos.filter(t => t.id !== id);
+    saveTodos();
+    renderTodos();
+  }
+  $('todoAdd').addEventListener('click', addTodo);
+  $('todoInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTodo(); } });
+  $('todoClear').addEventListener('click', () => {
+    todos = todos.filter(t => !t.done);
+    saveTodos();
+    renderTodos();
+  });
+  window.addEventListener('storage', e => {
+    if (e.key === TODO_KEY) { todos = loadTodos(); renderTodos(); }
+  });
+  renderTodos();
   renderHistory();
   render();
 })();
