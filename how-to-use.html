@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="theme-color" content="#000000">
+	<title>how to use · cadence</title>
+	<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+	<main class="docs">
+		<h1>how to use cadence</h1>
+
+		<p>Cadence is a focus stopwatch with optional breaks, task lists, and a local focus history. The app works without an account or third-party services.</p>
+
+		<h2>work and breaks</h2>
+		<ul>
+			<li>Select <strong>start</strong> to begin the work stopwatch, <strong>pause</strong> to stop it, or <strong>reset</strong> to start over.</li>
+			<li>Select <strong>start break</strong> whenever you want a break. Its length is the accumulated work time divided by the work-to-break ratio in settings. You can pause, resume, or end a break early.</li>
+			<li>When a break ends, work starts automatically if that setting is enabled.</li>
+			<li>The optional task trigger starts a break when you complete a top-level task or finish its last open subtask. The subtask trigger starts one when you complete a nested task or finish its last open subtask. Completing items only because you checked their parent does not trigger a break. Triggers are skipped if a break is already running or no work time is logged.</li>
+		</ul>
+
+		<h2>tasks</h2>
+		<ul>
+			<li>The to-do list is optional. Add tasks and descriptions, create multiple lists, and rename a list.</li>
+			<li>Use each task's edit action to change its name or description. Add subtasks from the task actions; collapse a task to hide its subtasks.</li>
+			<li>Delete a task from its actions. Deleting a task that has subtasks requires a second confirmation. Completed tasks can be cleared together from the bottom of the list.</li>
+			<li>Drag the grip to reorder a task. Drop near the middle of another task to make it a subtask; drop above or below to reorder it.</li>
+			<li>On touch screens, swipe right to nest a task under the task above it, or swipe left to move it out one level.</li>
+			<li>Keyboard alternatives: focus a task's grip and use the arrow keys to reorder or change its nesting. <kbd>Ctrl</kbd>+<kbd>Tab</kbd> nests under the previous task; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> moves out. Press <kbd>Escape</kbd> to cancel a drag.</li>
+			<li>Completing a task also completes its subtasks. A completed parent reopens if one of its subtasks is unchecked. Use <strong>clear completed</strong> to remove completed tasks.</li>
+		</ul>
+
+		<h2>settings</h2>
+		<ul>
+			<li><strong>Work : break ratio</strong> sets how much work time is needed for one unit of break time. For example, a ratio of 5 gives 1 minute of break for every 5 minutes of work.</li>
+			<li><strong>Auto-start work</strong> starts the stopwatch when a break finishes.</li>
+			<li><strong>Start break when a task/subtask is completed</strong> enables the matching completion trigger described above.</li>
+			<li><strong>Use military time</strong> displays session times in 24-hour HHmm format.</li>
+			<li><strong>Log elapsed time when resetting</strong> includes a running session in history when you reset the stopwatch.</li>
+		</ul>
+
+		<h2>focus history</h2>
+		<p>Pausing records a work session. Resetting records it only when the matching setting is enabled. Sessions that cross midnight are split across the days they cover. The activity chart summarizes the last 365 days; daily totals omit days without focus time. Delete an individual session from the session list if it was recorded by mistake.</p>
+
+		<h2>offline use and saved data</h2>
+		<p>Cadence uses browser storage for settings, task lists, and focus sessions. This data stays in the current browser and is not synced or backed up. Clearing browser data removes it.</p>
+		<p>When served from HTTPS or localhost, the app caches its pages and assets after the first visit so you can reopen it offline. If you open the files directly from your device, the app also works offline, but browser service workers are not available for that file URL.</p>
+		<p>Timer sounds are generated locally by the browser's Web Audio API. The browser may require a user gesture before playing sound.</p>
+
+		<p class="docs-nav"><a href="index.html">back to cadence</a></p>
+	</main>
+</body>
+</html>

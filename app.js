@@ -1,0 +1,1035 @@
+/*
+ * Cadence focus timer, settings, history, and nested task-list behavior.
+ * All data stays in this browser; the service worker caches this app shell for offline use.
+ */
+(() => {
+	const $ = id => document.getElementById(id);
+	const display = $('display');
+	const modeName = $('modeName');
+	const status = $('status');
+	const subline = $('subline');
+	const workControls = $('workControls');
+	const breakControls = $('breakControls');
+
+	let mode = 'work';
+	let workElapsed = 0;
+	let workStartedAt = 0;
+	let workRunning = false;
+	let breakRemaining = 0;
+	let breakDeadline = 0;
+	let breakRunning = false;
+	let audioContext;
+	const SESSION_STORAGE_KEY = 'work-break-focus-sessions-v1';
+	let activeSessionStart = null;
+
+	function localDateKey(date) {
+		const y = date.getFullYear();
+		const m = String(date.getMonth() + 1).padStart(2, '0');
+		const d = String(date.getDate()).padStart(2, '0');
+		return `${y}-${m}-${d}`;
+	}
+	let storageOk = true;
+	let sessionStorageOk = true;
+	function readSessionLogs() {
+		try {
+			const saved = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || '[]');
+			if (!Array.isArray(saved)) return [];
+			return saved.filter(entry => entry && typeof entry.id === 'string' &&
+				Number.isFinite(entry.start) && Number.isFinite(entry.end) && entry.end > entry.start);
+		} catch (_) {
+			sessionStorageOk = false;
+			return [];
+		}
+	}
+	let sessionLogs = readSessionLogs();
+	// Splits a session interval at each local midnight for daily aggregation and display.
+	function splitByDay(from, to) {
+		const parts = {};
+		let cursor = from;
+		while (cursor < to) {
+			const date = new Date(cursor);
+			const midnight = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime();
+			const end = Math.min(to, midnight);
+			const key = localDateKey(date);
+			parts[key] = (parts[key] || 0) + (end - cursor);
+			cursor = end;
+		}
+		return parts;
+	}
+	function formatDailyDuration(ms) {
+		const total = Math.floor(ms / 1000);
+		const h = Math.floor(total / 3600);
+		const m = Math.floor((total % 3600) / 60);
+		const s = total % 60;
+		return `${String(h).padStart(2,'0')}°${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}"`;
+	}
+	function displayDate(key) {
+		const [y, m, d] = key.split('-');
+		return `${d}/${m}/${y}`;
+	}
+	function displaySessionDate(timestamp) {
+		const date = new Date(timestamp);
+		return `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getFullYear()).slice(-2)}`;
+	}
+	function formatSessionTime(timestamp) {
+		const date = new Date(timestamp);
+		const hour = date.getHours();
+		const minute = String(date.getMinutes()).padStart(2, '0');
+		if ($('militaryTime').checked) return `${String(hour).padStart(2, '0')}${minute}`;
+		return `${String(hour % 12 || 12).padStart(2, '0')}:${minute} ${hour < 12 ? 'AM' : 'PM'}`;
+	}
+	function addSessionLog(start, end) {
+		let cursor = start;
+		while (cursor < end) {
+			const date = new Date(cursor);
+			const midnight = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime();
+			const segmentEnd = Math.min(end, midnight);
+			sessionLogs.push({ id: newId(), start: cursor, end: segmentEnd });
+			cursor = segmentEnd;
+		}
+	}
+	function finishFocusSession(end, includeInLog = true) {
+		if (activeSessionStart === null) return;
+		if (includeInLog && end > activeSessionStart) {
+			sessionLogs = readSessionLogs();
+			addSessionLog(activeSessionStart, end);
+			try {
+				localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionLogs));
+				sessionStorageOk = true;
+			} catch (_) { sessionStorageOk = false; }
+		}
+		activeSessionStart = null;
+		renderHistory();
+	}
+	function deleteSessionLog(id) {
+		sessionLogs = readSessionLogs().filter(entry => entry.id !== id);
+		try {
+			localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionLogs));
+			sessionStorageOk = true;
+		} catch (_) { sessionStorageOk = false; }
+		renderHistory();
+	}
+	let heatScrolled = false;
+	function renderHistory() {
+		sessionLogs = readSessionLogs();
+		const dailyTotals = {};
+		for (const session of sessionLogs) {
+			for (const [key, ms] of Object.entries(splitByDay(session.start, session.end))) {
+				dailyTotals[key] = (dailyTotals[key] || 0) + ms;
+			}
+		}
+		const entries = Object.entries(dailyTotals).filter(([, ms]) => ms > 0).sort(([a], [b]) => b.localeCompare(a));
+		const total = entries.reduce((sum, [, ms]) => sum + ms, 0);
+		$('historySummary').textContent = `total focus time: ${formatDailyDuration(total)}${sessionStorageOk ? '' : ' · not saved (browser storage unavailable)'}`;
+		const list = $('dailyLog');
+		list.replaceChildren();
+		for (const [key, ms] of entries) {
+			const li = document.createElement('li');
+			const date = document.createElement('span');
+			const duration = document.createElement('span');
+			date.textContent = displayDate(key);
+			duration.textContent = formatDailyDuration(ms);
+			li.append(date, duration);
+			list.append(li);
+		}
+		$('emptyLog').hidden = entries.length !== 0;
+		const sessionList = $('sessionLog');
+		sessionList.replaceChildren();
+		const sortedSessions = sessionLogs.slice().sort((a, b) => b.end - a.end);
+		for (const entry of sortedSessions) {
+			const li = document.createElement('li');
+			const details = document.createElement('span');
+			details.className = 'session-entry';
+			details.textContent = `${displaySessionDate(entry.start)} ${formatSessionTime(entry.start)}–${formatSessionTime(entry.end)} ${formatDailyDuration(entry.end - entry.start)}`;
+			const remove = document.createElement('button');
+			remove.type = 'button';
+			remove.className = 'session-delete';
+			remove.textContent = 'delete';
+			remove.setAttribute('aria-label', `delete focus session from ${details.textContent}`);
+			remove.addEventListener('click', () => deleteSessionLog(entry.id));
+			li.append(details, remove);
+			sessionList.append(li);
+		}
+		$('emptySessionLog').hidden = sortedSessions.length !== 0;
+
+		const heatmap = $('heatmap');
+		const months = $('heatMonths');
+		heatmap.replaceChildren();
+		months.replaceChildren();
+		const today = new Date();
+		today.setHours(0, 0, 0, 0);
+		const start = new Date(today);
+		start.setDate(start.getDate() - 364);
+		start.setDate(start.getDate() - start.getDay());
+		const days = [];
+		for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
+			days.push(new Date(d));
+		}
+		let lastMonth = -1;
+		let lastLabelCol = -10;
+		months.style.width = (Math.ceil(days.length / 7) * 16) + 'px';
+		for (const [index, day] of days.entries()) {
+			if (day.getMonth() !== lastMonth) {
+				const col = Math.floor(index / 7);
+				if (col - lastLabelCol >= 3) {
+					const label = document.createElement('span');
+					label.textContent = day.toLocaleString(undefined, { month: 'short' });
+					label.style.left = (col * 16) + 'px';
+					months.append(label);
+					lastLabelCol = col;
+				}
+				lastMonth = day.getMonth();
+			}
+			const key = localDateKey(day);
+			const ms = dailyTotals[key] || 0;
+			const hours = ms / 3600000;
+			const level = ms <= 0 ? 0 : hours < 1 ? 1 : hours < 3 ? 2 : hours < 5 ? 3 : hours < 7 ? 4 : hours < 9 ? 5 : 6;
+			const cell = document.createElement('div');
+			cell.className = `heat-day${level ? ` level-${level}` : ''}`;
+			cell.title = `${displayDate(key)} · ${formatDailyDuration(ms)}`;
+			heatmap.append(cell);
+		}
+		const wrap = heatmap.parentElement;
+		if (wrap && !heatScrolled) { wrap.scrollLeft = wrap.scrollWidth; heatScrolled = true; }
+	}
+
+	const notes = { C5:523.251, AS5:932.328, DS5:622.254, F5:698.456, G5:783.991 };
+	function playNote(name) {
+		try {
+			const AudioContext = window.AudioContext || window.webkitAudioContext;
+			if (!AudioContext) return;
+			audioContext ||= new AudioContext();
+			if (audioContext.state === 'suspended') audioContext.resume();
+			const oscillator = audioContext.createOscillator();
+			const gain = audioContext.createGain();
+			const now = audioContext.currentTime;
+			oscillator.type = 'triangle';
+			oscillator.frequency.setValueAtTime(notes[name], now);
+			gain.gain.setValueAtTime(0.0001, now);
+			gain.gain.exponentialRampToValueAtTime(0.12, now + 0.012);
+			gain.gain.setValueAtTime(0.12, now + 0.16);
+			gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+			oscillator.connect(gain);
+			gain.connect(audioContext.destination);
+			oscillator.start(now);
+			oscillator.stop(now + 0.2);
+		} catch (_) {}
+	}
+	function playSequence(names) {
+		names.forEach((name, index) => setTimeout(() => playNote(name), index * 240));
+	}
+	function format(ms) {
+		const total = Math.max(0, Math.floor(ms / 1000));
+		const h = Math.floor(total / 3600);
+		const m = Math.floor((total % 3600) / 60);
+		const s = total % 60;
+		return [h,m,s].map(v => String(v).padStart(2,'0')).join(':');
+	}
+	function currentWork() {
+		return workElapsed + (workRunning ? performance.now() - workStartedAt : 0);
+	}
+	function setWorkMode() {
+		mode = 'work';
+		modeName.textContent = 'work';
+		workControls.hidden = false;
+		breakControls.hidden = true;
+		subline.textContent = 'elapsed work time';
+	}
+	function startWork(withSound = true) {
+		if (workRunning) return;
+		setWorkMode();
+		workStartedAt = performance.now();
+		activeSessionStart = Date.now();
+		workRunning = true;
+		$('workStart').disabled = true;
+		$('workPause').disabled = false;
+		status.textContent = 'running';
+		if (withSound) playNote('C5');
+		render();
+	}
+	function pauseWork() {
+		if (!workRunning) return;
+		const stoppedAt = Date.now();
+		workElapsed = currentWork();
+		workRunning = false;
+		finishFocusSession(stoppedAt);
+		$('workStart').disabled = false;
+		$('workPause').disabled = true;
+		status.textContent = 'paused';
+		playNote('AS5');
+		render();
+	}
+	function resetWork() {
+		if (workRunning) {
+			const stoppedAt = Date.now();
+			finishFocusSession(stoppedAt, $('logReset').checked);
+		}
+		workRunning = false;
+		workElapsed = 0;
+		workStartedAt = 0;
+		setWorkMode();
+		$('workStart').disabled = false;
+		$('workPause').disabled = true;
+		status.textContent = 'ready';
+		playNote('DS5');
+		render();
+	}
+	function breakLengthMs() {
+		const ratio = Number($('ratio').value);
+		if (!Number.isFinite(ratio) || ratio <= 0) return 0;
+		return Math.floor(currentWork() / 1000 / ratio) * 1000;
+	}
+	function startBreak() {
+		const duration = breakLengthMs();   // worked out first, so a refused break never pauses the stopwatch
+		if (duration <= 0) {
+			status.textContent = 'work time too short';
+			return;
+		}
+		if (workRunning) pauseWorkSilently();
+		mode = 'break';
+		breakRemaining = duration;
+		breakDeadline = performance.now() + breakRemaining;
+		breakRunning = true;
+		modeName.textContent = 'break';
+		status.textContent = 'running';
+		subline.textContent = 'break countdown · calculated from work time';
+		workControls.hidden = true;
+		breakControls.hidden = false;
+		$('breakPause').hidden = false;
+		$('breakResume').hidden = true;
+		playNote('F5');
+		render();
+	}
+	function pauseWorkSilently() {
+		const stoppedAt = Date.now();
+		workElapsed = currentWork();
+		workRunning = false;
+		finishFocusSession(stoppedAt);
+		$('workStart').disabled = false;
+		$('workPause').disabled = true;
+	}
+	function pauseBreak() {
+		if (!breakRunning) return;
+		breakRemaining = Math.max(0, breakDeadline - performance.now());
+		breakRunning = false;
+		status.textContent = 'paused';
+		$('breakPause').hidden = true;
+		$('breakResume').hidden = false;
+		render();
+	}
+	function resumeBreak() {
+		if (breakRunning || breakRemaining <= 0) return;
+		breakDeadline = performance.now() + breakRemaining;
+		breakRunning = true;
+		status.textContent = 'running';
+		$('breakPause').hidden = false;
+		$('breakResume').hidden = true;
+		render();
+	}
+	function finishBreak() {
+		breakRemaining = 0;
+		breakRunning = false;
+		playSequence(['G5','DS5']);
+		if ($('autoStart').checked) {
+			workElapsed = 0;
+			startWork(false);
+		} else {
+			setWorkMode();
+			status.textContent = 'break complete';
+			$('workStart').disabled = false;
+			$('workPause').disabled = true;
+			render();
+		}
+	}
+	function backToWork() {
+		breakRunning = false;
+		setWorkMode();
+		status.textContent = 'ready';
+		$('workStart').disabled = false;
+		$('workPause').disabled = true;
+		render();
+	}
+	function render() {
+		if (mode === 'work') {
+			display.textContent = format(currentWork());
+			if (workRunning) status.textContent = 'running';
+		} else {
+			const remaining = breakRunning ? Math.max(0, breakDeadline - performance.now()) : breakRemaining;
+			display.textContent = format(remaining);
+			if (breakRunning && remaining <= 0) finishBreak();
+		}
+	}
+	$('workStart').addEventListener('click', () => startWork(true));
+	$('workPause').addEventListener('click', pauseWork);
+	$('workReset').addEventListener('click', resetWork);
+	$('breakStart').addEventListener('click', startBreak);
+	$('breakPause').addEventListener('click', pauseBreak);
+	$('breakResume').addEventListener('click', resumeBreak);
+	$('backToWork').addEventListener('click', backToWork);
+	$('ratio').addEventListener('change', () => {
+		const input = $('ratio');
+		const value = Number(input.value);
+		if (!Number.isFinite(value) || value <= 0) input.value = '5';
+	});
+	setInterval(render, 1000);
+	window.addEventListener('storage', e => {
+		if (e.key === SESSION_STORAGE_KEY) { sessionLogs = readSessionLogs(); renderHistory(); }
+	});
+
+	// ---------- settings persistence ----------
+	const SETTINGS_KEY = 'work-break-focus-settings-v1';
+	function loadSettings() {
+		try {
+			const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+			if (!saved || typeof saved !== 'object') return;
+			if (Number.isFinite(saved.ratio) && saved.ratio > 0) $('ratio').value = String(saved.ratio);
+			if (typeof saved.autoStart === 'boolean') $('autoStart').checked = saved.autoStart;
+			// 'todoBreak' was the single toggle in the previous version; it now means "task completed"
+			if (typeof saved.taskBreak === 'boolean') $('taskBreak').checked = saved.taskBreak;
+			else if (typeof saved.todoBreak === 'boolean') $('taskBreak').checked = saved.todoBreak;
+			if (typeof saved.subtaskBreak === 'boolean') $('subtaskBreak').checked = saved.subtaskBreak;
+			if (typeof saved.militaryTime === 'boolean') $('militaryTime').checked = saved.militaryTime;
+			if (typeof saved.logReset === 'boolean') $('logReset').checked = saved.logReset;
+		} catch (_) {}
+	}
+	function saveSettings() {
+		try {
+			localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+				ratio: Number($('ratio').value) > 0 ? Number($('ratio').value) : 5,
+				autoStart: $('autoStart').checked,
+				taskBreak: $('taskBreak').checked,
+				subtaskBreak: $('subtaskBreak').checked,
+				militaryTime: $('militaryTime').checked,
+				logReset: $('logReset').checked
+			}));
+		} catch (_) {}
+	}
+	loadSettings();
+	['ratio', 'autoStart', 'taskBreak', 'subtaskBreak', 'militaryTime', 'logReset'].forEach(id =>
+		$(id).addEventListener('change', () => { saveSettings(); renderHistory(); }));
+
+	// ---------- optional to-do list: nested tasks, descriptions, drag and drop ----------
+	// Data: taskLists = [{ id, name, todos: [ ...nested task items... ] }]
+	// Rule kept everywhere: a completed item never has an unfinished item beneath it.
+	const TODO_KEY = 'work-break-focus-todos-v1';
+	const ui = { editId: null, editDraft: null, subFor: null, subDraft: '', confirmDel: null, focusNext: null, renameList: false };
+	let todoStorageOk = true;
+	let taskData = loadTaskData();
+	let taskLists = taskData.lists;
+	let activeListId = taskData.activeListId;
+	let todos = taskLists.find(list => list.id === activeListId).todos;
+
+	function mk(tag, cls, text) {
+		const node = document.createElement(tag);
+		if (cls) node.className = cls;
+		if (text !== undefined) node.textContent = text;
+		return node;
+	}
+	function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+	function newItem(text, desc) { return { id: newId(), text: text.slice(0, 200), desc: (desc || '').slice(0, 1000), done: false, collapsed: false, subtasks: [] }; }
+	function validItem(t) { return !!t && typeof t.id === 'string' && typeof t.text === 'string'; }
+	function cleanItem(t) {   // older saves have no desc / collapsed / subtasks: they get defaults
+		return {
+			id: t.id,
+			text: t.text.slice(0, 200),
+			desc: typeof t.desc === 'string' ? t.desc.slice(0, 1000) : '',
+			done: !!t.done,
+			collapsed: !!t.collapsed,
+			subtasks: Array.isArray(t.subtasks) ? t.subtasks.filter(validItem).map(cleanItem) : []
+		};
+	}
+	function defaultTaskList() { return { id: newId(), name: 'my tasks', todos: [] }; }
+	function cleanTaskList(list) {
+		if (!list || typeof list.id !== 'string') return null;
+		const todos = Array.isArray(list.todos) ? list.todos.filter(validItem).map(cleanItem) : [];
+		normalize(todos);
+		return {
+			id: list.id,
+			name: typeof list.name === 'string' && list.name.trim() ? list.name.trim().slice(0, 60) : 'untitled list',
+			todos
+		};
+	}
+	function loadTaskData() {
+		try {
+			const stored = localStorage.getItem(TODO_KEY);
+			if (stored === null) {
+				const list = defaultTaskList();
+				return { lists: [list], activeListId: list.id };
+			}
+			const saved = JSON.parse(stored);
+			if (Array.isArray(saved)) {
+				const list = defaultTaskList();
+				list.todos = saved.filter(validItem).map(cleanItem);
+				normalize(list.todos);
+				return { lists: [list], activeListId: list.id, migrated: true };
+			}
+			const lists = saved && Array.isArray(saved.lists) ? saved.lists.map(cleanTaskList).filter(Boolean) : [];
+			if (!lists.length) {
+				const list = defaultTaskList();
+				return { lists: [list], activeListId: list.id };
+			}
+			const activeListId = lists.some(list => list.id === saved.activeListId) ? saved.activeListId : lists[0].id;
+			return { lists, activeListId };
+		} catch (_) {
+			todoStorageOk = false;
+			const list = defaultTaskList();
+			return { lists: [list], activeListId: list.id };
+		}
+	}
+	function saveTodos() {
+		try {
+			localStorage.setItem(TODO_KEY, JSON.stringify({ lists: taskLists, activeListId }));
+			todoStorageOk = true;
+		} catch (_) { todoStorageOk = false; }
+	}
+	if (taskData.migrated) saveTodos();
+	function countTasks(items) {
+		return items.reduce((count, item) => count + 1 + countTasks(item.subtasks), 0);
+	}
+	function renderTaskLists() {
+		const tabs = $('todoListTabs');
+		tabs.replaceChildren();
+		for (const taskList of taskLists) {
+			const tab = mk('button', 'todo-list-tab');
+			tab.type = 'button';
+			tab.setAttribute('aria-pressed', String(taskList.id === activeListId));
+			tab.setAttribute('aria-label', `${taskList.name}, ${countTasks(taskList.todos)} tasks`);
+			const name = mk('span', 'todo-list-tab-name', taskList.name);
+			const count = countTasks(taskList.todos);
+			const amount = mk('span', 'todo-list-tab-count', `${count} ${count === 1 ? 'task' : 'tasks'}`);
+			tab.append(name, amount);
+			tab.addEventListener('click', () => selectTaskList(taskList.id));
+			tabs.append(tab);
+		}
+		$('todoListControls').hidden = ui.renameList;
+		$('todoListRenameForm').hidden = !ui.renameList;
+		$('todoStorageStatus').hidden = todoStorageOk;
+		$('todoStorageStatus').textContent = 'task lists could not be saved or loaded because of a browser storage error.';
+	}
+	function resetTodoEditor() {
+		ui.editId = null;
+		ui.editDraft = null;
+		ui.subFor = null;
+		ui.subDraft = '';
+		ui.confirmDel = null;
+		ui.focusNext = null;
+	}
+	function selectTaskList(id) {
+		const selected = taskLists.find(taskList => taskList.id === id);
+		if (!selected || id === activeListId) return;
+		activeListId = id;
+		todos = selected.todos;
+		resetTodoEditor();
+		ui.renameList = false;
+		$('todoInput').value = '';
+		$('todoDesc').value = '';
+		$('todoListNameError').hidden = true;
+		saveTodos();
+		renderTodos();
+	}
+	function addTaskList() {
+		const names = new Set(taskLists.map(list => list.name.toLowerCase()));
+		let name = 'new list';
+		let suffix = 2;
+		while (names.has(name)) name = `new list ${suffix++}`;
+		const list = { id: newId(), name, todos: [] };
+		taskLists.push(list);
+		activeListId = list.id;
+		todos = list.todos;
+		resetTodoEditor();
+		$('todoInput').value = '';
+		$('todoDesc').value = '';
+		saveTodos();
+		renderTodos();
+	}
+	function startRenameTaskList() {
+		const list = taskLists.find(taskList => taskList.id === activeListId);
+		if (!list) return;
+		ui.renameList = true;
+		$('todoListNameInput').value = list.name;
+		$('todoListNameError').hidden = true;
+		renderTaskLists();
+		$('todoListNameInput').focus();
+		$('todoListNameInput').select();
+	}
+	function cancelRenameTaskList() {
+		ui.renameList = false;
+		$('todoListNameError').hidden = true;
+		renderTaskLists();
+	}
+	function saveTaskListName(event) {
+		event.preventDefault();
+		const input = $('todoListNameInput');
+		const name = input.value.trim();
+		if (!name) {
+			$('todoListNameError').hidden = false;
+			input.focus();
+			return;
+		}
+		const list = taskLists.find(taskList => taskList.id === activeListId);
+		if (!list) return;
+		list.name = name.slice(0, 60);
+		ui.renameList = false;
+		$('todoListNameError').hidden = true;
+		saveTodos();
+		renderTodos();
+	}
+	// an item can't stay completed while something beneath it is unfinished (deepest levels first)
+	function normalize(list = todos) {
+		for (const t of list) {
+			normalize(t.subtasks);
+			if (t.done && t.subtasks.some(c => !c.done)) t.done = false;
+		}
+	}
+	function setAllDone(list) { for (const t of list) { t.done = true; setAllDone(t.subtasks); } }
+	function countBelow(item) { return item.subtasks.reduce((n, c) => n + 1 + countBelow(c), 0); }
+	function pruneDone(list) { return list.filter(t => !t.done).map(t => { t.subtasks = pruneDone(t.subtasks); return t; }); }
+	// ancestors runs from the top-level task down to the direct parent; depth 0 = top-level task
+	function findItem(id, list = todos, parent = null, depth = 0, ancestors = []) {
+		for (let i = 0; i < list.length; i++) {
+			const item = list[i];
+			if (item.id === id) return { item, parent, list, index: i, depth, ancestors };
+			const hit = findItem(id, item.subtasks, item, depth + 1, ancestors.concat(item));
+			if (hit) return hit;
+		}
+		return null;
+	}
+
+	// ----- rendering -----
+	function renderTodos() {
+		const list = $('todoList');
+		// keep half-typed edit / subtask text when something else triggers a re-render
+		const openEdit = list.querySelector('.todo-edit');
+		if (openEdit && ui.editId) ui.editDraft = { id: ui.editId, text: openEdit.querySelector('input').value, desc: openEdit.querySelector('textarea').value };
+		const openSub = list.querySelector('.todo-subform input');
+		if (openSub) ui.subDraft = openSub.value;
+
+		renderTaskLists();
+		list.replaceChildren();
+		for (const task of todos) list.append(buildItem(task, null, 0));
+
+		const nested = [];
+		(function walk(items, depth) { for (const t of items) { if (depth > 0) nested.push(t); walk(t.subtasks, depth + 1); } })(todos, 0);
+		const taskDone = todos.filter(t => t.done).length;
+		const subDone = nested.filter(t => t.done).length;
+		$('todoEmpty').hidden = todos.length !== 0;
+		$('todoFoot').hidden = todos.length === 0;
+		$('todoCount').textContent = taskDone + ' of ' + todos.length + ' done' + (nested.length ? ' · subtasks ' + subDone + ' of ' + nested.length : '');
+		$('todoClear').hidden = taskDone + subDone === 0;
+
+		const focusTarget = list.querySelector('[data-focus="1"]');
+		ui.focusNext = null;
+		if (focusTarget) {
+			focusTarget.focus();
+			if (focusTarget.type === 'text' || focusTarget.tagName === 'TEXTAREA') {
+				try { focusTarget.setSelectionRange(focusTarget.value.length, focusTarget.value.length); } catch (_) {}
+			}
+		}
+	}
+	function buildItem(item, parent, depth) {
+		const li = mk('li');
+		li.append(buildRow(item, parent, li));
+		const flat = depth + 1 > 5 ? ' flat' : '';
+		if (item.subtasks.length && !item.collapsed) {
+			const sublist = mk('ul', 'todo-sublist' + flat);
+			for (const sub of item.subtasks) sublist.append(buildItem(sub, item, depth + 1));
+			li.append(sublist);
+		}
+		if (ui.subFor === item.id) li.append(buildSubForm(item, flat));
+		return li;
+	}
+	function buildRow(item, parent, li) {
+		const row = mk('div', 'todo-row' + (item.done ? ' done' : ''));
+		row.dataset.id = item.id;
+		let swipeStart = null;
+
+		const grip = mk('button', 'todo-grip', '⋮⋮');
+		grip.type = 'button';
+		grip.setAttribute('aria-label', 'reorder: drag, or use arrow keys (up/down move, right nests under the item above, left moves out one level): ' + item.text);
+		grip.addEventListener('pointerdown', e => startDrag(e, item.id, row, li, grip));
+		grip.addEventListener('keydown', e => keyMove(e, item.id));
+
+		const box = mk('input', 'todo-check');
+		box.type = 'checkbox';
+		box.checked = item.done;
+		box.setAttribute('aria-label', (parent ? 'complete subtask: ' : 'complete task: ') + item.text);
+		if (ui.focusNext === 'check:' + item.id) box.dataset.focus = '1';
+		else if (ui.focusNext === 'grip:' + item.id) grip.dataset.focus = '1';
+		box.addEventListener('change', () => toggleDone(item.id, box.checked));
+
+		const content = mk('div', 'todo-content');
+		content.addEventListener('pointerdown', e => {
+			if (e.pointerType !== 'touch' || e.target.closest('button, input, textarea')) return;
+			swipeStart = { x: e.clientX, y: e.clientY };
+		});
+		content.addEventListener('pointerup', e => {
+			if (!swipeStart || e.pointerType !== 'touch') return;
+			const dx = e.clientX - swipeStart.x;
+			const dy = e.clientY - swipeStart.y;
+			swipeStart = null;
+			if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.3) return;
+			if (dx > 0) nestItem(item.id);
+			else unnestItem(item.id);
+		});
+		content.addEventListener('pointercancel', () => { swipeStart = null; });
+		if (ui.editId === item.id) {
+			content.append(buildEditForm(item));
+		} else {
+			const title = mk('div', 'todo-text', item.text);
+			if (item.subtasks.length) title.append(mk('span', 'todo-progress', item.subtasks.filter(t => t.done).length + '/' + item.subtasks.length));
+			content.append(title);
+			if (item.desc) content.append(mk('div', 'todo-desc', item.desc));
+			const actions = mk('div', 'todo-actions');
+			const act = (label, handler, aria) => {
+				const b = mk('button', 'todo-act', label);
+				b.type = 'button';
+				if (aria) b.setAttribute('aria-label', aria);
+				b.addEventListener('click', handler);
+				actions.append(b);
+			};
+			act('edit', () => startEdit(item.id));
+			act('+ subtask', () => startAddSub(item.id));
+			if (item.subtasks.length) {
+				act(item.collapsed ? 'expand (' + countBelow(item) + ')' : 'collapse', () => toggleCollapse(item.id));
+			}
+			const below = countBelow(item);
+			act(ui.confirmDel === item.id ? 'delete + ' + below + ' below?' : 'delete', () => deleteItem(item.id), 'delete: ' + item.text);
+			content.append(actions);
+		}
+		row.append(grip, box, content);
+		return row;
+	}
+	function buildEditForm(item) {
+		const draft = ui.editDraft && ui.editDraft.id === item.id ? ui.editDraft : null;
+		const form = mk('div', 'todo-edit');
+		const title = mk('input', 'todo-field');
+		title.type = 'text';
+		title.maxLength = 200;
+		title.autocomplete = 'off';
+		title.value = draft ? draft.text : item.text;
+		title.setAttribute('aria-label', 'task text');
+		if (ui.focusNext === 'edit:' + item.id) title.dataset.focus = '1';
+		const desc = mk('textarea', 'todo-field');
+		desc.rows = 3;
+		desc.maxLength = 1000;
+		desc.value = draft ? draft.desc : item.desc;
+		desc.placeholder = 'description (optional)';
+		desc.setAttribute('aria-label', 'task description');
+		const actions = mk('div', 'todo-edit-actions');
+		const save = mk('button', 'todo-small', 'save');
+		const cancel = mk('button', 'todo-small', 'cancel');
+		save.type = cancel.type = 'button';
+		const doSave = () => {
+			const text = title.value.trim();
+			if (!text) { title.focus(); return; }
+			item.text = text.slice(0, 200);
+			item.desc = desc.value.trim().slice(0, 1000);
+			ui.editId = null; ui.editDraft = null;
+			saveTodos(); renderTodos();
+		};
+		const doCancel = () => { ui.editId = null; ui.editDraft = null; renderTodos(); };
+		save.addEventListener('click', doSave);
+		cancel.addEventListener('click', doCancel);
+		title.addEventListener('keydown', e => {
+			if (e.key === 'Enter') { e.preventDefault(); doSave(); }
+			else if (e.key === 'Escape') doCancel();
+		});
+		desc.addEventListener('keydown', e => {
+			if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doSave(); }
+			else if (e.key === 'Escape') doCancel();
+		});
+		actions.append(save, cancel);
+		form.append(title, desc, actions);
+		return form;
+	}
+	function buildSubForm(parent, flat) {
+		const form = mk('div', 'todo-subform' + flat);
+		const input = mk('input', 'todo-field');
+		input.type = 'text';
+		input.maxLength = 200;
+		input.autocomplete = 'off';
+		input.value = ui.subDraft || '';
+		input.placeholder = 'add a subtask';
+		input.setAttribute('aria-label', 'new subtask for: ' + parent.text);
+		if (ui.focusNext === 'sub:' + parent.id) input.dataset.focus = '1';
+		const add = mk('button', 'todo-small', 'add');
+		const close = mk('button', 'todo-small', 'done');
+		add.type = close.type = 'button';
+		const submit = () => {
+			const text = input.value.trim();
+			if (!text) return;
+			parent.subtasks.push(newItem(text, ''));
+			parent.collapsed = false;
+			normalize();   // an unfinished subtask re-opens a completed parent
+			input.value = '';
+			ui.subDraft = '';
+			ui.focusNext = 'sub:' + parent.id;   // stay open to add several in a row
+			saveTodos(); renderTodos();
+		};
+		const closeForm = () => { ui.subFor = null; ui.subDraft = ''; renderTodos(); };
+		add.addEventListener('click', submit);
+		close.addEventListener('click', closeForm);
+		input.addEventListener('keydown', e => {
+			if (e.key === 'Enter') { e.preventDefault(); submit(); }
+			else if (e.key === 'Escape') closeForm();
+		});
+		form.append(input, add, close);
+		return form;
+	}
+
+	// ----- actions -----
+	function addTodo() {
+		const input = $('todoInput');
+		const text = input.value.trim();
+		if (!text) return;
+		todos.push(newItem(text, $('todoDesc').value.trim()));
+		input.value = '';
+		$('todoDesc').value = '';
+		saveTodos();
+		renderTodos();
+		input.focus();
+	}
+	function startEdit(id) {
+		ui.editId = id; ui.editDraft = null; ui.subFor = null; ui.subDraft = '';
+		ui.focusNext = 'edit:' + id;
+		renderTodos();
+	}
+	function startAddSub(id) {
+		const loc = findItem(id);
+		if (loc) loc.item.collapsed = false;
+		ui.subFor = id; ui.subDraft = ''; ui.editId = null; ui.editDraft = null;
+		ui.focusNext = 'sub:' + id;
+		saveTodos();
+		renderTodos();
+	}
+	function toggleCollapse(id) {
+		const loc = findItem(id);
+		if (!loc) return;
+		loc.item.collapsed = !loc.item.collapsed;
+		saveTodos();
+		renderTodos();
+	}
+	// Checking an item completes everything beneath it. Finishing the last open item in a group also
+	// completes its parent, then that parent's parent if it was the last open one there, and so on.
+	// Break triggers: top-level items use the "task" toggle, nested items the "subtask" toggle. Only the
+	// item you checked and the parents completed by finishing their last child count (not items swept
+	// along by checking a parent), and any one of them is enough to start a single break.
+	function toggleDone(id, done) {
+		const loc = findItem(id);
+		if (!loc) return;
+		const item = loc.item;
+		item.done = done;
+		const kinds = [];
+		if (done) {
+			setAllDone(item.subtasks);
+			kinds.push(loc.depth === 0 ? 'task' : 'subtask');
+			for (let i = loc.ancestors.length - 1; i >= 0; i--) {
+				const ancestor = loc.ancestors[i];
+				if (!ancestor.subtasks.every(c => c.done)) break;
+				ancestor.done = true;
+				kinds.push(i === 0 ? 'task' : 'subtask');
+			}
+		}
+		normalize();   // un-checking something re-opens every completed parent above it
+		saveTodos();
+		ui.focusNext = 'check:' + id;
+		renderTodos();
+		const trigger = kinds.some(k => k === 'task' ? $('taskBreak').checked : $('subtaskBreak').checked);
+		if (trigger && mode === 'work') startBreak();
+	}
+	function deleteItem(id) {
+		const loc = findItem(id);
+		if (!loc) return;
+		if (loc.item.subtasks.length && ui.confirmDel !== id) {
+			ui.confirmDel = id;   // first click only asks; second click deletes
+			renderTodos();
+			setTimeout(() => { if (ui.confirmDel === id) { ui.confirmDel = null; renderTodos(); } }, 4000);
+			return;
+		}
+		ui.confirmDel = null;
+		loc.list.splice(loc.index, 1);
+		if (ui.editId && !findItem(ui.editId)) { ui.editId = null; ui.editDraft = null; }
+		if (ui.subFor && !findItem(ui.subFor)) { ui.subFor = null; ui.subDraft = ''; }
+		saveTodos();
+		renderTodos();
+	}
+	function clearCompleted() {
+		todos = pruneDone(todos);
+		if (ui.editId && !findItem(ui.editId)) { ui.editId = null; ui.editDraft = null; }
+		if (ui.subFor && !findItem(ui.subFor)) { ui.subFor = null; ui.subDraft = ''; }
+		saveTodos();
+		renderTodos();
+	}
+
+	// Moves item `dragId` (with everything beneath it) relative to `refId`:
+	// pos is 'before', 'after' (after refId and its whole subtree) or 'into' (as the last child of refId).
+	function moveItem(dragId, refId, pos) {
+		const src = findItem(dragId);
+		const ref0 = findItem(refId);
+		if (!src || !ref0 || dragId === refId) return false;
+		if (ref0.ancestors.some(a => a.id === dragId)) return false;   // can't drop inside itself
+		src.list.splice(src.index, 1);
+		const ref = findItem(refId);
+		let dest, index;
+		if (pos === 'into') { dest = ref.item.subtasks; index = dest.length; ref.item.collapsed = false; }
+		else { dest = ref.list; index = ref.index + (pos === 'after' ? 1 : 0); }
+		dest.splice(index, 0, src.item);
+		normalize();
+		saveTodos();
+		renderTodos();
+		return true;
+	}
+	function nestItem(id) {
+		const loc = findItem(id);
+		if (loc && loc.index > 0) moveItem(id, loc.list[loc.index - 1].id, 'into');
+	}
+	function unnestItem(id) {
+		const loc = findItem(id);
+		if (loc && loc.parent) moveItem(id, loc.parent.id, 'after');
+	}
+	// Keyboard alternatives to dragging and swiping.
+	function keyMove(e, id) {
+		if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+		e.preventDefault();
+		const loc = findItem(id);
+		if (!loc) return;
+		ui.focusNext = 'grip:' + id;
+		if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+			const to = loc.index + (e.key === 'ArrowUp' ? -1 : 1);
+			if (to < 0 || to >= loc.list.length) { ui.focusNext = null; return; }
+			[loc.list[loc.index], loc.list[to]] = [loc.list[to], loc.list[loc.index]];
+			saveTodos(); renderTodos();
+		} else if (e.key === 'ArrowRight') {
+			nestItem(id);
+		} else if (e.key === 'ArrowLeft') {
+			unnestItem(id);
+		} else {
+			ui.focusNext = null;
+		}
+	}
+
+	// ----- drag and drop (pointer events: works with mouse, touch and pen) -----
+	let drag = null;
+	function clearDropMarks() {
+		$('todoList').querySelectorAll('.drop-before, .drop-after, .drop-into').forEach(n => n.classList.remove('drop-before', 'drop-after', 'drop-into'));
+	}
+	function positionGhost() {
+		drag.ghost.style.left = (drag.x - drag.offX) + 'px';
+		drag.ghost.style.top = (drag.y - drag.offY) + 'px';
+	}
+	function updateDragTarget() {
+		clearDropMarks();
+		drag.target = null;
+		const list = $('todoList');
+		const lr = list.getBoundingClientRect();
+		if (drag.x < lr.left - 48 || drag.x > lr.right + 48) return;
+		let best = null, bestDist = Infinity;
+		for (const row of list.querySelectorAll('.todo-row')) {
+			const r = row.getBoundingClientRect();
+			const d = drag.y < r.top ? r.top - drag.y : drag.y > r.bottom ? drag.y - r.bottom : 0;
+			if (d < bestDist) { bestDist = d; best = row; }
+		}
+		if (!best || bestDist > 80) return;
+		const refId = best.dataset.id;
+		const ref = findItem(refId);
+		if (!ref || refId === drag.id || ref.ancestors.some(a => a.id === drag.id)) return;
+		const r = best.getBoundingClientRect();
+		const frac = Math.min(1, Math.max(0, (drag.y - r.top) / r.height));
+		const pos = frac < 0.28 ? 'before' : frac > 0.72 ? 'after' : 'into';
+		drag.target = { refId, pos };
+		if (pos === 'into') best.classList.add('drop-into');
+		else best.closest('li').classList.add(pos === 'before' ? 'drop-before' : 'drop-after');
+	}
+	function onDragMove(e) {
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		drag.x = e.clientX; drag.y = e.clientY;
+		positionGhost();
+		updateDragTarget();
+	}
+	function onDragUp(e) { if (drag && e.pointerId === drag.pointerId) endDrag(true); }
+	function onDragCancel(e) { if (drag && e.pointerId === drag.pointerId) endDrag(false); }
+	function startDrag(e, id, row, li, grip) {
+		if (drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+		e.preventDefault();
+		try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+		const rect = row.getBoundingClientRect();
+		const ghost = row.cloneNode(true);
+		ghost.classList.add('todo-ghost');
+		ghost.style.width = rect.width + 'px';
+		document.body.append(ghost);
+		drag = {
+			id, grip, li, ghost, pointerId: e.pointerId, target: null,
+			x: e.clientX, y: e.clientY, offX: e.clientX - rect.left, offY: e.clientY - rect.top,
+			timer: setInterval(() => {   // scroll the page when dragging near the top / bottom edge
+				if (!drag) return;
+				const edge = 70;
+				let dy = 0;
+				if (drag.y < edge) dy = -Math.ceil((edge - drag.y) / 5);
+				else if (drag.y > window.innerHeight - edge) dy = Math.ceil((drag.y - (window.innerHeight - edge)) / 5);
+				if (dy) { window.scrollBy(0, dy); updateDragTarget(); }
+			}, 30)
+		};
+		li.classList.add('dragging');
+		document.body.classList.add('is-dragging');
+		grip.addEventListener('pointermove', onDragMove);
+		grip.addEventListener('pointerup', onDragUp);
+		grip.addEventListener('pointercancel', onDragCancel);
+		positionGhost();
+		updateDragTarget();
+	}
+	function endDrag(apply) {
+		if (!drag) return;
+		const d = drag;
+		drag = null;
+		clearInterval(d.timer);
+		d.ghost.remove();
+		clearDropMarks();
+		d.li.classList.remove('dragging');
+		document.body.classList.remove('is-dragging');
+		d.grip.removeEventListener('pointermove', onDragMove);
+		d.grip.removeEventListener('pointerup', onDragUp);
+		d.grip.removeEventListener('pointercancel', onDragCancel);
+		try { d.grip.releasePointerCapture(d.pointerId); } catch (_) {}
+		if (apply && d.target) moveItem(d.id, d.target.refId, d.target.pos);
+	}
+	document.addEventListener('keydown', e => {
+		if (e.key === 'Escape' && drag) endDrag(false);
+		if (e.key === 'Tab' && e.ctrlKey) {
+			const row = e.target instanceof Element && e.target.closest('.todo-row');
+			if (!row) return;
+			e.preventDefault();
+			if (e.shiftKey) unnestItem(row.dataset.id);
+			else nestItem(row.dataset.id);
+		}
+	});
+
+	$('todoAdd').addEventListener('click', addTodo);
+	$('todoAddList').addEventListener('click', addTaskList);
+	$('todoRenameList').addEventListener('click', startRenameTaskList);
+	$('todoListRenameForm').addEventListener('submit', saveTaskListName);
+	$('todoCancelRename').addEventListener('click', cancelRenameTaskList);
+	$('todoListNameInput').addEventListener('keydown', e => { if (e.key === 'Escape') cancelRenameTaskList(); });
+	$('todoInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTodo(); } });
+	$('todoDesc').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addTodo(); } });
+	$('todoClear').addEventListener('click', clearCompleted);
+	window.addEventListener('storage', e => {
+		if (e.key !== TODO_KEY || drag) return;
+		taskData = loadTaskData();
+		taskLists = taskData.lists;
+		activeListId = taskData.activeListId;
+		todos = taskLists.find(list => list.id === activeListId).todos;
+		if (taskData.migrated) saveTodos();
+		resetTodoEditor();
+		ui.renameList = false;
+		renderTodos();
+	});
+	renderTodos();
+	renderHistory();
+	render();
+
+	if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+		navigator.serviceWorker.register('./service-worker.js').catch(error => {
+			console.error('Offline support could not be enabled.', error);
+		});
+	}
+})();
